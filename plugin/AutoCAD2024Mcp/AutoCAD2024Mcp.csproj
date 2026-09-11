@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>AutoCAD2024Mcp</AssemblyName>
+    <RootNamespace>AutoCAD2024Mcp</RootNamespace>
+    <AutoCADDir Condition="'$(AutoCADDir)' == '' and Exists('D:\Autodesk\AutoCAD 2024\acdbmgd.dll')">D:\Autodesk\AutoCAD 2024</AutoCADDir>
+    <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2024</AutoCADDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="acdbmgd"><HintPath>$(AutoCADDir)\acdbmgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="acmgd"><HintPath>$(AutoCADDir)\acmgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="accoremgd"><HintPath>$(AutoCADDir)\accoremgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(AutoCADDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
