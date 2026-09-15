@@ -3,6 +3,9 @@
     <TargetFramework>net48</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AssemblyName>AutoCAD2024Mcp</AssemblyName>
     <RootNamespace>AutoCAD2024Mcp</RootNamespace>
     <AutoCADDir Condition="'$(AutoCADDir)' == '' and Exists('D:\Autodesk\AutoCAD 2024\acdbmgd.dll')">D:\Autodesk\AutoCAD 2024</AutoCADDir>

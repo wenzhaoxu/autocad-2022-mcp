@@ -16,6 +16,7 @@
 | `cad_inspect` | 图纸、实体、图层、块、布局、样式、线型、系统变量 |
 | `cad_draw` | 直线、多段线、圆、圆弧、椭圆、点、文字、块参照和尺寸 |
 | `cad_solid` | 三维长方体、球体、圆柱、圆锥及布尔并集/差集/交集 |
+| `cad_model_build` | 用参数化配方批量构建或重建可编辑三维实体，并在失败时补偿回滚 |
 | `cad_measure` | 包围盒、长度、面积、体积、质心及密度换算质量 |
 | `cad_edit` | 属性、移动、复制、旋转、缩放、镜像和删除 |
 | `cad_layer` | 图层创建、修改、改名、删除、当前层、隔离和恢复 |
@@ -28,7 +29,7 @@
 
 插件还提供 `CADMCPDIFFERENTIAL` 和 `CADMCPDIFFERENTIAL3D` 示例生成命令，分别生成差速器二维装配剖视图及可编辑的三维组件装配模型。
 
-精确修改以 AutoCAD `Handle` 为稳定标识。建议先用 `cad_inspect` 查询，再把返回的 handle 交给 `cad_edit`。每个 AutoCAD 进程使用独立的 PID 管道；存在多个实例时必须先调用 `cad_instances` 和 `cad_connect`。写请求被串行执行，数据库修改使用文档锁和事务。保存和大型导出的默认超时为 120 秒，并以 AutoCAD 命令结束事件确认结果。
+精确修改以 AutoCAD `Handle` 为稳定标识。建议先用 `cad_inspect` 查询，再把返回的 handle 交给 `cad_edit`。`cad_model_build` 接收带参数引用的 box、sphere、cylinder、cone 和 boolean 特征序列，相邻实体自动合并为最多 250 个实体的一次 CAD 事务；重建时传回上次的 `liveHandles`，新模型成功后才清理旧模型。每个 AutoCAD 进程使用独立的 PID 管道；存在多个实例时必须先调用 `cad_instances` 和 `cad_connect`。数据库写入仍在 AutoCAD 主线程串行执行，命名管道可并发接收并排队请求。保存和大型导出的默认超时为 120 秒，并以 AutoCAD 命令结束事件确认结果。
 
 ## 环境
 
@@ -101,6 +102,7 @@ node .\scripts\smoke-test.mjs
 ```powershell
 npm run dev
 npm run check
+npm run bench
 ```
 
 协议是一条 UTF-8 JSON 请求和一条 JSON 响应，每个管道连接处理一次请求。插件的 `Application.Idle` 回调把后台请求切换到 AutoCAD 主线程，避免跨线程访问数据库。

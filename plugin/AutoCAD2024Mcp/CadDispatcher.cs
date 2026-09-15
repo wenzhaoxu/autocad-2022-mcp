@@ -63,7 +63,7 @@ namespace AutoCAD2024Mcp
                 commandText = "_.SAVEAS\r" + SaveCommandVersion((string)p["version"]) + "\r\"" + path.Replace("\"", "") + "\"\r";
             }
 
-            var completion = new TaskCompletionSource<JToken>();
+            var completion = NewCompletion();
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -126,7 +126,7 @@ namespace AutoCAD2024Mcp
                 File.Delete(path);
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            var completion = new TaskCompletionSource<JToken>();
+            var completion = NewCompletion();
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -181,7 +181,7 @@ namespace AutoCAD2024Mcp
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             doc.Editor.SetImpliedSelection(ids.ToArray());
-            var completion = new TaskCompletionSource<JToken>();
+            var completion = NewCompletion();
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -228,7 +228,7 @@ namespace AutoCAD2024Mcp
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path));
 
-            var completion = new TaskCompletionSource<JToken>();
+            var completion = NewCompletion();
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -843,5 +843,6 @@ namespace AutoCAD2024Mcp
         private static JArray PointJson(Point3d p) => new JArray(p.X, p.Y, p.Z);
         private static JObject ExtentsJson(Extents3d e) => new JObject { ["min"] = PointJson(e.MinPoint), ["max"] = PointJson(e.MaxPoint) };
         private static DwgVersion DwgVersionOf(string value) { switch (value) { case "2013": return DwgVersion.AC1027; case "2010": return DwgVersion.AC1024; case "2007": return DwgVersion.AC1021; case "2004": return DwgVersion.AC1800; case "2000": return DwgVersion.AC1015; default: return DwgVersion.AC1032; } }
+        private static TaskCompletionSource<JToken> NewCompletion() => new TaskCompletionSource<JToken>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

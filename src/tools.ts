@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { modelRecipeSchema } from "./recipe.js";
 
 const point2 = z.tuple([z.number(), z.number()]);
 const point3 = z.tuple([z.number(), z.number(), z.number()]);
@@ -59,6 +60,8 @@ export type ToolDefinition = {
   schema: z.ZodRawShape;
   method: string;
   readOnly?: boolean;
+  destructive?: boolean;
+  idempotent?: boolean;
 };
 
 export const toolDefinitions: ToolDefinition[] = [
@@ -70,7 +73,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: "cad_connect",
     description: "Bind subsequent MCP calls to one specific AutoCAD process. This prevents operations from being routed to the wrong drawing when multiple instances are running.",
-    schema: { processId: z.number().int().positive() }, method: "__local_connect",
+    schema: { processId: z.number().int().positive() }, method: "__local_connect", readOnly: true, destructive: false, idempotent: true,
   },
   {
     name: "cad_status",
@@ -79,7 +82,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: "cad_capabilities",
-    description: "Return the exact 0.0.3 feature matrix, limits, coordinate conventions, and verified export behavior without contacting AutoCAD.",
+    description: "Return the exact feature matrix, limits, coordinate conventions, and verified export behavior without contacting AutoCAD.",
     schema: {}, method: "__local_capabilities", readOnly: true,
   },
   {
@@ -115,6 +118,15 @@ export const toolDefinitions: ToolDefinition[] = [
       toolHandles: z.array(z.string()).min(1).optional(),
       eraseTools: z.boolean().optional(),
     }, method: "solid",
+  },
+  {
+    name: "cad_model_build",
+    description: "Build or rebuild a deterministic parameterized solid model from a named recipe. Keep the recipe and returned liveHandles for later rebuilds.",
+    schema: {
+      recipe: modelRecipeSchema,
+      overrides: z.record(z.string(), z.number().finite()).optional(),
+      previousHandles: z.array(z.string()).max(1000).optional(),
+    }, method: "__local_model_build", destructive: true,
   },
   {
     name: "cad_measure",

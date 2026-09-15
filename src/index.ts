@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CadBridgeClient, CadBridgeError } from "./bridge.js";
+import { buildModelRecipe } from "./recipe.js";
 import { toolDefinitions } from "./tools.js";
 
 const server = new McpServer({ name: "autocad-2024", version: "0.0.3" });
@@ -15,8 +16,8 @@ for (const tool of toolDefinitions) {
       inputSchema: tool.schema,
       annotations: {
         readOnlyHint: tool.readOnly ?? false,
-        destructiveHint: ["cad_edit", "cad_document", "cad_layer", "cad_undo", "cad_command"].includes(tool.name),
-        idempotentHint: tool.readOnly ?? false,
+        destructiveHint: tool.destructive ?? !(tool.readOnly ?? false),
+        idempotentHint: tool.idempotent ?? (tool.readOnly ?? false),
         openWorldHint: false,
       },
     },
@@ -36,6 +37,8 @@ for (const tool of toolDefinitions) {
               }
           : tool.method === "__local_connect"
             ? { connected: bridge.selectProcess((args as { processId: number }).processId) }
+            : tool.method === "__local_model_build"
+              ? await buildModelRecipe(bridge, args)
             : await bridge.call(tool.method, args);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],

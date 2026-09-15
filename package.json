@@ -11,7 +11,9 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "check": "npm run build && npm test",
+    "test:protocol": "node scripts/protocol-smoke.mjs",
+    "check": "npm run build && npm test && npm run test:protocol",
+    "bench": "npm run build && node scripts/bench-recipes.mjs",
     "pack:release": "npm pack --pack-destination release"
   },
   "files": ["dist/src", "README.md", "CHANGELOG.md", "mcp.example.json"],

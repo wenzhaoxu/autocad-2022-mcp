@@ -7,21 +7,29 @@ namespace AutoCAD2024Mcp
     public sealed class Plugin : IExtensionApplication
     {
         private static PipeBridge _bridge;
+        private static bool _idleHooked;
 
         public void Initialize()
         {
             RunSafely("initialize", () =>
             {
-                _bridge = new PipeBridge();
-                _bridge.Start();
-                Application.Idle += OnIdle;
+                EnsureStarted();
                 Write("AutoCAD 2024 MCP bridge 0.0.3 started. Pipe: " + _bridge.PipeName);
             });
         }
 
         public void Terminate()
         {
-            RunSafely("terminate", () => { Application.Idle -= OnIdle; _bridge?.Dispose(); });
+            RunSafely("terminate", () =>
+            {
+                if (_idleHooked)
+                {
+                    Application.Idle -= OnIdle;
+                    _idleHooked = false;
+                }
+                _bridge?.Dispose();
+                _bridge = null;
+            });
         }
 
         private static void OnIdle(object sender, System.EventArgs e) => _bridge?.DrainOnCadThread();
@@ -31,16 +39,33 @@ namespace AutoCAD2024Mcp
         {
             RunSafely("start", () =>
             {
-                if (_bridge == null) _bridge = new PipeBridge();
-                _bridge.Start();
+                EnsureStarted();
                 Write("MCP bridge is running. Pipe: " + _bridge.PipeName);
             });
+        }
+
+        private static void EnsureStarted()
+        {
+            if (_bridge == null) _bridge = new PipeBridge();
+            _bridge.Start();
+            if (_idleHooked) return;
+            Application.Idle += OnIdle;
+            _idleHooked = true;
         }
 
         [CommandMethod("CADMCPSTOP", CommandFlags.Session)]
         public void Stop()
         {
-            RunSafely("stop", () => { _bridge?.Stop(); Write("MCP bridge stopped."); });
+            RunSafely("stop", () =>
+            {
+                if (_idleHooked)
+                {
+                    Application.Idle -= OnIdle;
+                    _idleHooked = false;
+                }
+                _bridge?.Stop();
+                Write("MCP bridge stopped.");
+            });
         }
 
         [CommandMethod("CADMCPSTATUS", CommandFlags.Session)]

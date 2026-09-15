@@ -14,11 +14,13 @@ namespace AutoCAD2024Mcp
     internal sealed class PendingRequest
     {
         public JObject Request { get; set; }
-        public TaskCompletionSource<JObject> Completion { get; } = new TaskCompletionSource<JObject>();
+        public TaskCompletionSource<JObject> Completion { get; } =
+            new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     internal sealed class PipeBridge : IDisposable
     {
+        private const int MaxRequestsPerIdle = 4;
         private readonly CadInstanceRegistration _registration;
         private readonly ConcurrentQueue<PendingRequest> _queue = new ConcurrentQueue<PendingRequest>();
         private CancellationTokenSource _cts;
@@ -50,17 +52,34 @@ namespace AutoCAD2024Mcp
         {
             while (!token.IsCancellationRequested)
             {
+                NamedPipeServerStream pipe = null;
                 try
                 {
-                    using (var pipe = new NamedPipeServerStream(PipeName, PipeDirection.InOut, 1,
-                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
-                    {
-                        await pipe.WaitForConnectionAsync(token).ConfigureAwait(false);
-                        await HandleClient(pipe, token).ConfigureAwait(false);
-                    }
+                    pipe = new NamedPipeServerStream(PipeName, PipeDirection.InOut,
+                        NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous);
+                    await pipe.WaitForConnectionAsync(token).ConfigureAwait(false);
+                    NamedPipeServerStream connected = pipe;
+                    pipe = null;
+                    _ = HandleConnectedClient(connected, token);
                 }
                 catch (OperationCanceledException) { }
-                catch { await Task.Delay(250, token).ConfigureAwait(false); }
+                catch
+                {
+                    if (!token.IsCancellationRequested)
+                        await Task.Delay(250, token).ConfigureAwait(false);
+                }
+                finally { pipe?.Dispose(); }
+            }
+        }
+
+        private async Task HandleConnectedClient(NamedPipeServerStream pipe, CancellationToken token)
+        {
+            using (pipe)
+            {
+                try { await HandleClient(pipe, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch { }
             }
         }
 
@@ -92,22 +111,30 @@ namespace AutoCAD2024Mcp
         public void DrainOnCadThread()
         {
             UpdateRegistration();
-            if (Interlocked.CompareExchange(ref _activeRequest, 1, 0) != 0) return;
-            if (Interlocked.Exchange(ref _draining, 1) != 0) { Interlocked.Exchange(ref _activeRequest, 0); return; }
+            if (Interlocked.CompareExchange(ref _activeRequest, 0, 0) != 0) return;
+            if (Interlocked.Exchange(ref _draining, 1) != 0) return;
             try
             {
-                if (!_queue.TryDequeue(out PendingRequest pending))
+                for (int processed = 0; processed < MaxRequestsPerIdle; processed++)
                 {
-                    Interlocked.Exchange(ref _activeRequest, 0);
-                    return;
+                    if (Interlocked.CompareExchange(ref _activeRequest, 1, 0) != 0) return;
+                    if (!_queue.TryDequeue(out PendingRequest pending))
+                    {
+                        Interlocked.Exchange(ref _activeRequest, 0);
+                        return;
+                    }
+                    string id = (string)pending.Request["id"];
+                    string method = (string)pending.Request["method"];
+                    Task<JToken> task;
+                    try { task = CadDispatcher.DispatchAsync(method, pending.Request["params"] as JObject ?? new JObject()); }
+                    catch (Exception ex) { Complete(pending, id, null, ex); continue; }
+                    if (task.IsCompleted) CompleteTask(pending, id, task);
+                    else
+                    {
+                        task.ContinueWith(t => CompleteTask(pending, id, t), TaskScheduler.Default);
+                        return;
+                    }
                 }
-                string id = (string)pending.Request["id"];
-                string method = (string)pending.Request["method"];
-                Task<JToken> task;
-                try { task = CadDispatcher.DispatchAsync(method, pending.Request["params"] as JObject ?? new JObject()); }
-                catch (Exception ex) { Complete(pending, id, null, ex); return; }
-                if (task.IsCompleted) CompleteTask(pending, id, task);
-                else task.ContinueWith(t => CompleteTask(pending, id, t), TaskScheduler.Default);
             }
             finally { Interlocked.Exchange(ref _draining, 0); }
         }
