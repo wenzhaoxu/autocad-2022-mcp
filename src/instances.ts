@@ -26,6 +26,12 @@ export function isProcessAlive(processId: number): boolean {
   }
 }
 
+export function isRegistrationFresh(value: CadInstance, now = Date.now()): boolean {
+  const updatedAt = Date.parse(value.updatedAt);
+  const maxAgeMs = Number(process.env.AUTOCAD_MCP_HEARTBEAT_MAX_AGE_MS ?? 1_800_000);
+  return Number.isFinite(updatedAt) && Number.isFinite(maxAgeMs) && maxAgeMs > 0 && now - updatedAt <= maxAgeMs;
+}
+
 export function listCadInstances(
   directory = instanceDirectory(),
   alive: (processId: number) => boolean = isProcessAlive,
@@ -36,7 +42,7 @@ export function listCadInstances(
     if (!name.endsWith(".json")) continue;
     try {
       const value = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")) as CadInstance;
-      if (!Number.isInteger(value.processId) || !value.pipeName || !alive(value.processId)) {
+      if (!Number.isInteger(value.processId) || !value.pipeName || !isRegistrationFresh(value) || !alive(value.processId)) {
         try { fs.unlinkSync(path.join(directory, name)); } catch { }
         continue;
       }

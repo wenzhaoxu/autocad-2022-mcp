@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { modelRecipeSchema } from "./recipe.js";
+import { workflowInputSchema } from "./workflow.js";
 
 const point2 = z.tuple([z.number(), z.number()]);
 const point3 = z.tuple([z.number(), z.number(), z.number()]);
@@ -20,11 +21,26 @@ const commonEntity = {
   layer: z.string().optional(),
   colorIndex: z.number().int().min(0).max(256).optional(),
   linetype: z.string().optional(),
+  linetypeScale: z.number().positive().optional(),
+  lineweight: z.number().int().optional(),
+  visible: z.boolean().optional(),
+};
+
+const mutationControl = {
+  expectedDocumentId: z.string().min(1).optional().describe("Document id returned by cad_status"),
+  expectedRevision: z.number().int().nonnegative().optional().describe("Drawing revision returned by cad_status"),
+  visualMode: z.enum(["silent", "batch", "step"]).optional().describe("Control AutoCAD screen updates; step presents each created entity"),
+  highlightResults: z.boolean().optional(),
+  zoomToResult: z.boolean().optional(),
 };
 
 const entity = z.discriminatedUnion("type", [
   z.object({ type: z.literal("line"), start: point, end: point, ...commonEntity }),
   z.object({ type: z.literal("polyline"), points: z.array(point2).min(2), closed: z.boolean().optional(), width: z.number().nonnegative().optional(), ...commonEntity }),
+  z.object({ type: z.literal("polyline3d"), points: z.array(point).min(2), closed: z.boolean().optional(), ...commonEntity }),
+  z.object({ type: z.literal("spline"), fitPoints: z.array(point).min(2), degree: z.number().int().min(1).max(25).optional(), fitTolerance: z.number().positive().optional(), ...commonEntity }),
+  z.object({ type: z.literal("ray"), basePoint: point, throughPoint: point, ...commonEntity }),
+  z.object({ type: z.literal("xline"), basePoint: point, throughPoint: point, ...commonEntity }),
   z.object({ type: z.literal("circle"), center: point, radius: z.number().positive(), ...commonEntity }),
   z.object({ type: z.literal("arc"), center: point, radius: z.number().positive(), startAngle: z.number(), endAngle: z.number(), ...commonEntity }),
   z.object({ type: z.literal("ellipse"), center: point, majorAxis: point3, radiusRatio: z.number().positive().max(1), startParameter: z.number().optional(), endParameter: z.number().optional(), ...commonEntity }),
@@ -33,12 +49,17 @@ const entity = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mtext"), position: point, text: z.string(), height: z.number().positive(), width: z.number().positive(), rotation: z.number().optional(), style: z.string().optional(), ...commonEntity }),
   z.object({ type: z.literal("hatch"), pattern: z.string().default("SOLID"), scale: z.number().positive().optional(), angle: z.number().optional(), boundaryHandles: z.array(z.string()).min(1), associative: z.boolean().optional(), ...commonEntity }),
   z.object({ type: z.literal("blockReference"), name: z.string(), insertionPoint: point, scale: point3.optional(), rotation: z.number().optional(), attributes: z.record(z.string()).optional(), ...commonEntity }),
-  z.object({ type: z.literal("alignedDimension"), first: point, second: point, dimensionLine: point, style: z.string().optional(), ...commonEntity }),
-  z.object({ type: z.literal("rotatedDimension"), first: point, second: point, dimensionLine: point, rotation: z.number(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("leader"), points: z.array(point).min(2), hasArrowHead: z.boolean().optional(), ...commonEntity }),
+  z.object({ type: z.literal("table"), position: point, rows: z.array(z.array(z.string()).min(1)).min(1).max(200), rowHeight: z.number().positive().optional(), columnWidth: z.number().positive().optional(), textHeight: z.number().positive().optional(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("alignedDimension"), first: point, second: point, dimensionLine: point, dimensionText: z.string().optional(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("rotatedDimension"), first: point, second: point, dimensionLine: point, rotation: z.number(), dimensionText: z.string().optional(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("radialDimension"), center: point, chordPoint: point, leaderLength: z.number().nonnegative().optional(), dimensionText: z.string().optional(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("diametricDimension"), chordPoint: point, farChordPoint: point, leaderLength: z.number().nonnegative().optional(), dimensionText: z.string().optional(), style: z.string().optional(), ...commonEntity }),
+  z.object({ type: z.literal("angularDimension2Line"), line1Start: point, line1End: point, line2Start: point, line2End: point, arcPoint: point, dimensionText: z.string().optional(), style: z.string().optional(), ...commonEntity }),
 ]);
 
 const editOperation = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("setProperties"), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional(), linetype: z.string().optional(), lineweight: z.number().optional() }),
+  z.object({ op: z.literal("setProperties"), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional(), linetype: z.string().optional(), linetypeScale: z.number().positive().optional(), lineweight: z.number().int().optional(), visible: z.boolean().optional() }),
   z.object({ op: z.literal("move"), from: point, to: point }),
   z.object({ op: z.literal("copy"), from: point, to: point }),
   z.object({ op: z.literal("rotate"), base: point, angle: z.number() }),
@@ -52,6 +73,9 @@ const solidPrimitive = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sphere"), center: point, radius: z.number().positive(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
   z.object({ type: z.literal("cylinder"), center: point, radius: z.number().positive(), height: z.number().positive(), axis: point3.optional(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
   z.object({ type: z.literal("cone"), center: point, baseRadius: z.number().positive(), topRadius: z.number().nonnegative(), height: z.number().positive(), axis: point3.optional(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
+  z.object({ type: z.literal("torus"), center: point, majorRadius: z.number().positive(), minorRadius: z.number().positive(), axis: point3.optional(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
+  z.object({ type: z.literal("wedge"), origin: point, length: z.number().positive(), width: z.number().positive(), height: z.number().positive(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
+  z.object({ type: z.literal("pyramid"), center: point, sides: z.number().int().min(3).max(64), baseRadius: z.number().positive(), topRadius: z.number().nonnegative().optional(), height: z.number().positive(), axis: point3.optional(), layer: z.string().optional(), colorIndex: z.number().int().min(0).max(256).optional() }),
 ]);
 
 export type ToolDefinition = {
@@ -81,9 +105,34 @@ export const toolDefinitions: ToolDefinition[] = [
     schema: {}, method: "status", readOnly: true,
   },
   {
+    name: "cad_events",
+    description: "Read the bounded AutoCAD change journal after a sequence cursor. Includes interactive commands, entity changes, document changes, MCP operations, and presentation steps.",
+    schema: {
+      afterSequence: z.number().int().nonnegative().optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+      documentId: z.string().min(1).optional(),
+      types: z.array(z.enum([
+        "bridge.started", "document.created", "document.activated", "document.closing",
+        "command.started", "command.completed", "command.failed", "command.cancelled",
+        "entity.appended", "entity.modified", "entity.erased",
+        "operation.started", "operation.completed", "operation.failed",
+        "presentation.step", "presentation.completed",
+      ])).optional(),
+    }, method: "events", readOnly: true,
+  },
+  {
     name: "cad_capabilities",
     description: "Return the exact feature matrix, limits, coordinate conventions, and verified export behavior without contacting AutoCAD.",
     schema: {}, method: "__local_capabilities", readOnly: true,
+  },
+  {
+    name: "cad_workflow",
+    description:
+      "Preview or apply a bounded multi-step CAD change set with document preconditions, argument validation, optional post-change verification, idempotency, and compensating undo.",
+    schema: workflowInputSchema.shape,
+    method: "__local_workflow",
+    destructive: true,
+    idempotent: true,
   },
   {
     name: "cad_document",
@@ -112,12 +161,25 @@ export const toolDefinitions: ToolDefinition[] = [
     name: "cad_solid",
     description: "Create editable AutoCAD 3DSOLID primitives or apply boolean union, subtract, and intersect operations. Coordinates are WCS and one request is atomic.",
     schema: {
-      action: z.enum(["create", "boolean"]),
+      action: z.enum(["create", "boolean", "extrude", "revolve", "sweep"]),
       primitives: z.array(solidPrimitive).min(1).max(250).optional(),
       operation: z.enum(["union", "subtract", "intersect"]).optional(),
       targetHandle: z.string().optional(),
       toolHandles: z.array(z.string()).min(1).optional(),
       eraseTools: z.boolean().optional(),
+      profileHandle: z.string().optional(),
+      pathHandle: z.string().optional(),
+      height: z.number().finite().optional(),
+      direction: point3.optional(),
+      axisPoint: point.optional(),
+      axis: point3.optional(),
+      angle: z.number().finite().optional(),
+      startAngle: z.number().finite().optional(),
+      eraseSource: z.boolean().optional(),
+      erasePath: z.boolean().optional(),
+      layer: z.string().optional(),
+      colorIndex: z.number().int().min(0).max(256).optional(),
+      ...mutationControl,
     }, method: "solid",
   },
   {
@@ -144,13 +206,13 @@ export const toolDefinitions: ToolDefinition[] = [
       entities: z.array(entity).min(1).max(1000),
       space: z.enum(["model", "paper", "current"]).optional(),
       coordinateSystem: z.enum(["UCS", "WCS"]).optional(),
-      zoomToResult: z.boolean().optional(),
+      ...mutationControl,
     }, method: "draw",
   },
   {
     name: "cad_edit",
     description: "Atomically edit entities selected by exact handles or a constrained filter. Supports properties, move, copy, rotate, scale, mirror, and erase.",
-    schema: { target, operations: z.array(editOperation).min(1).max(50), allowEmpty: z.boolean().optional() }, method: "edit",
+    schema: { target, operations: z.array(editOperation).min(1).max(50), allowEmpty: z.boolean().optional(), ...mutationControl }, method: "edit",
   },
   {
     name: "cad_layer",
@@ -159,7 +221,23 @@ export const toolDefinitions: ToolDefinition[] = [
       action: z.enum(["create", "update", "delete", "rename", "setCurrent", "isolate", "restore"]),
       name: z.string().optional(), newName: z.string().optional(),
       properties: z.object({ colorIndex: z.number().int().min(1).max(255).optional(), linetype: z.string().optional(), lineweight: z.number().optional(), on: z.boolean().optional(), frozen: z.boolean().optional(), locked: z.boolean().optional(), plottable: z.boolean().optional(), description: z.string().optional() }).optional(),
+      ...mutationControl,
     }, method: "layer",
+  },
+  {
+    name: "cad_text_style",
+    description: "List, create, update, set the current, or apply an AutoCAD text style. CJK text drawn without an explicit style is assigned a Unicode-capable style automatically.",
+    schema: {
+      action: z.enum(["list", "create", "update", "setCurrent", "apply"]),
+      name: z.string().min(1).optional(),
+      fontFile: z.string().min(1).optional(),
+      bigFontFile: z.string().optional(),
+      xScale: z.number().positive().optional(),
+      obliqueAngle: z.number().finite().optional(),
+      vertical: z.boolean().optional(),
+      target: target.optional(),
+      ...mutationControl,
+    }, method: "textStyle",
   },
   {
     name: "cad_block",
@@ -169,6 +247,7 @@ export const toolDefinitions: ToolDefinition[] = [
       sourceHandles: z.array(z.string()).optional(), sourcePath: z.string().optional(), basePoint: point.optional(),
       insertionPoint: point.optional(), scale: point3.optional(), rotation: z.number().optional(),
       attributes: z.record(z.string()).optional(), deleteSource: z.boolean().optional(),
+      ...mutationControl,
     }, method: "block",
   },
   {
@@ -178,6 +257,7 @@ export const toolDefinitions: ToolDefinition[] = [
       action: z.enum(["list", "create", "rename", "delete", "activate", "configure"]),
       name: z.string().optional(), newName: z.string().optional(),
       settings: z.object({ device: z.string().optional(), media: z.string().optional(), styleSheet: z.string().optional(), orientation: z.enum(["portrait", "landscape"]).optional(), plotType: z.enum(["layout", "extents", "window", "display"]).optional(), window: z.tuple([point2, point2]).optional(), scaleToFit: z.boolean().optional(), scale: z.number().positive().optional(), centered: z.boolean().optional() }).optional(),
+      ...mutationControl,
     }, method: "layout",
   },
   {
@@ -196,7 +276,7 @@ export const toolDefinitions: ToolDefinition[] = [
     schema: {
       action: z.enum(["zoomExtents", "zoomWindow", "zoomObjects", "pan", "orbit", "setView", "regen", "capture"]),
       window: z.tuple([point, point]).optional(), handles: z.array(z.string()).optional(),
-      delta: point2.optional(), viewName: z.string().optional(), path: z.string().optional(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(),
+      delta: point2.optional(), viewName: z.string().optional(), path: z.string().optional(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), overwrite: z.boolean().optional(),
     }, method: "view",
   },
   {

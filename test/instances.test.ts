@@ -34,6 +34,18 @@ describe("AutoCAD instance discovery", () => {
     expect(listCadInstances(directory, (pid) => pid === 202).map((item) => item.processId)).toEqual([202]);
   });
 
+  it("ignores a stale registration even when its pid has been reused", () => {
+    const directory = registry();
+    add(directory, process.pid);
+    const file = path.join(directory, `${process.pid}.json`);
+    const stale = JSON.parse(fs.readFileSync(file, "utf8"));
+    stale.updatedAt = "2020-01-01T00:00:00.000Z";
+    fs.writeFileSync(file, JSON.stringify(stale));
+
+    expect(listCadInstances(directory, () => true)).toEqual([]);
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
   it("requires explicit selection when multiple processes are live", async () => {
     const directory = registry();
     add(directory, process.pid, "unreachable-a");

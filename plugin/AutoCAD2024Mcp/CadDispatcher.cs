@@ -23,15 +23,61 @@ namespace AutoCAD2024Mcp
 {
     internal static class CadDispatcher
     {
-        public static Task<JToken> DispatchAsync(string method, JObject p)
+        private const string ChineseTextStyleName = "MCP_CJK";
+        private const int DefaultOperationTimeoutMs = 120000;
+        public static Task<JToken> DispatchAsync(string method, JObject p, string requestId = null, int timeoutMs = DefaultOperationTimeoutMs)
         {
-            if (IsDrawingCopy(method, p)) return QueueDrawingCopyAsync(method, p);
-            if (method == "export" && (string)p["format"] == "dxf") return QueueDxfExportAsync(p);
-            if (method == "export" && (string)p["format"] == "stl") return QueueStlExportAsync(p);
-            if (IsNativeDocumentSave(method, p)) return QueueNativeDocumentSaveAsync(p);
-            if (!RequiresCommandContext(method, p)) return Task.FromResult(Dispatch(method, p));
-            return DispatchInCommandContextAsync(method, p);
+            if (method == "events") return Task.FromResult<JToken>(CadEventJournal.Read(p));
+            string operationId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId;
+            Document document = AcApp.DocumentManager.MdiActiveDocument;
+            CadEventJournal.OperationStarted(operationId, method, document);
+            try
+            {
+                Task<JToken> task;
+                using (CadEventJournal.BeginOperation(operationId, method))
+                {
+                    ValidateMutationContext(method, p, document);
+                    if (IsDrawingCopy(method, p)) task = QueueDrawingCopyAsync(method, p);
+                    else if (method == "export" && (string)p["format"] == "dxf") task = QueueDxfExportAsync(p);
+                    else if (method == "export" && (string)p["format"] == "stl") task = QueueStlExportAsync(p);
+                    else if (method == "export") task = QueueNativeExportAsync(p);
+                    else if (IsNativeDocumentSave(method, p)) task = QueueNativeDocumentSaveAsync(p);
+                    else if (RequiresQueuedCommand(method, p)) task = QueueInteractiveOperationAsync(method, p);
+                    else if (!RequiresCommandContext(method, p)) task = Task.FromResult(DispatchAndPresent(method, p));
+                    else task = DispatchInCommandContextAsync(method, p);
+                }
+                return ObserveOperationAsync(task, operationId, method, document, timeoutMs);
+            }
+            catch (System.Exception exception)
+            {
+                CadEventJournal.OperationCompleted(operationId, method, document, false, ErrorCode(exception), exception.Message);
+                throw;
+            }
         }
+
+        private static async Task<JToken> ObserveOperationAsync(Task<JToken> task, string operationId, string method, Document document, int requestedTimeoutMs)
+        {
+            try
+            {
+                int operationTimeoutMs = Math.Max(1000, Math.Min(requestedTimeoutMs - 1000, 1800000));
+                Task completed = await Task.WhenAny(task, Task.Delay(operationTimeoutMs)).ConfigureAwait(false);
+                if (!ReferenceEquals(completed, task))
+                {
+                    _ = task.ContinueWith(value => { var ignored = value.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+                    throw new CadMcpException("COMMAND_TIMEOUT", "AutoCAD did not finish the operation within " + operationTimeoutMs + " ms.");
+                }
+                JToken result = await task.ConfigureAwait(false);
+                CadEventJournal.OperationCompleted(operationId, method, document, true);
+                return result;
+            }
+            catch (System.Exception exception)
+            {
+                CadEventJournal.OperationCompleted(operationId, method, document, false, ErrorCode(exception), exception.Message);
+                throw;
+            }
+        }
+
+        private static string ErrorCode(System.Exception exception) => exception is CadMcpException known ? known.Code : "CAD_EXCEPTION";
 
         private static bool IsNativeDocumentSave(string method, JObject p) =>
             method == "document" && ((string)p["action"] == "save" || (string)p["action"] == "saveAs");
@@ -114,6 +160,43 @@ namespace AutoCAD2024Mcp
         private static bool IsDrawingCopy(string method, JObject p) =>
             (method == "document" && (string)p["action"] == "saveCopy") ||
             (method == "export" && (string)p["format"] == "dwg");
+
+        private static Task<JToken> QueueNativeExportAsync(JObject p)
+        {
+            Document doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) throw new CadMcpException("NO_ACTIVE_DOCUMENT", "No active AutoCAD drawing.");
+            string format = RequiredString(p, "format").ToLowerInvariant();
+            var commands = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["pdf"] = "-EXPORTPDF",
+                ["dwf"] = "DWFOUT",
+                ["svg"] = "SVGOUT",
+                ["png"] = "PNGOUT",
+                ["jpeg"] = "JPGOUT"
+            };
+            if (!commands.TryGetValue(format, out string command))
+                throw new CadMcpException("INVALID_FORMAT", "Unsupported native export format: " + format);
+            string path = AbsolutePath(p, "path", false);
+            if (File.Exists(path))
+            {
+                if ((bool?)p["overwrite"] != true) throw new CadMcpException("FILE_EXISTS", "Destination exists; set overwrite=true to replace it.");
+                File.Delete(path);
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string commandText = "_." + command + "\r\"" + path.Replace("\"", "") + "\"\r";
+            return QueueCommandCompletion(doc, name => CommandNamesMatch(name, command), commandText, 1, "EXPORT_FAILED", () =>
+            {
+                if (!File.Exists(path)) throw new CadMcpException("EXPORT_FAILED", "AutoCAD completed " + command + " without creating: " + path);
+                return new JObject
+                {
+                    ["exported"] = true,
+                    ["format"] = format,
+                    ["path"] = path,
+                    ["queued"] = false,
+                    ["confirmed"] = true
+                };
+            });
+        }
 
         private static Task<JToken> QueueDxfExportAsync(JObject p)
         {
@@ -289,6 +372,205 @@ namespace AutoCAD2024Mcp
             return false;
         }
 
+        private static bool RequiresQueuedCommand(string method, JObject p)
+        {
+            if (method == "undo") return true;
+            if (method == "command") return (bool?)p["waitForCompletion"] ?? true;
+            if (method == "view" && (string)p["action"] == "capture") return true;
+            return false;
+        }
+
+        private static Task<JToken> QueueInteractiveOperationAsync(string method, JObject p)
+        {
+            Document doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) throw new CadMcpException("NO_ACTIVE_DOCUMENT", "No active AutoCAD drawing.");
+            if (method == "view")
+            {
+                string path = AbsolutePath(p, "path", false);
+                if (File.Exists(path))
+                {
+                    if ((bool?)p["overwrite"] != true) throw new CadMcpException("FILE_EXISTS", "Destination exists; set overwrite=true to replace it.");
+                    File.Delete(path);
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                return QueueCommandCompletion(doc, name => string.Equals(name, "PNGOUT", StringComparison.OrdinalIgnoreCase),
+                    "_.PNGOUT\r\"" + path.Replace("\"", "") + "\"\r", 1, "CAPTURE_FAILED", () =>
+                    {
+                        if (!File.Exists(path)) throw new CadMcpException("CAPTURE_FAILED", "AutoCAD completed PNGOUT without creating: " + path);
+                        return new JObject { ["captured"] = true, ["path"] = path, ["queued"] = false, ["confirmed"] = true };
+                    });
+            }
+            if (method == "undo")
+            {
+                string action = RequiredString(p, "action");
+                int steps = (int?)p["steps"] ?? 1;
+                string command = action == "undo" ? "U" : action == "redo" ? "REDO" : null;
+                if (command == null) throw new CadMcpException("INVALID_ACTION", "Undo action must be undo or redo.");
+                string commandText = string.Concat(Enumerable.Repeat("_." + command + "\r", steps));
+                return QueueCommandCompletion(doc, name => string.Equals(name, command, StringComparison.OrdinalIgnoreCase),
+                    commandText, steps, "UNDO_FAILED", () => new JObject
+                    {
+                        ["queued"] = false,
+                        ["confirmed"] = true,
+                        ["action"] = action,
+                        ["steps"] = steps
+                    });
+            }
+
+            string requested = RequiredString(p, "command").Trim().TrimStart('_', '.');
+            if (!AllowedCommands.Contains(requested))
+                throw new CadMcpException("COMMAND_BLOCKED", "Command is not allowlisted: " + requested, AllowedCommands.OrderBy(x => x));
+            JArray arguments = p["arguments"] as JArray ?? new JArray();
+            string line = "_." + requested + "\r" + string.Join("\r", arguments.Select(value => QuoteCommandArg((string)value ?? value.ToString()))) + "\r";
+            return QueueCommandCompletion(doc, name => CommandNamesMatch(name, requested), line, 1, "COMMAND_FAILED", () => new JObject
+            {
+                ["queued"] = false,
+                ["confirmed"] = true,
+                ["command"] = requested
+            });
+        }
+
+        private static Task<JToken> QueueCommandCompletion(Document doc, Func<string, bool> matches, string commandText,
+            int requiredCompletions, string failureCode, Func<JToken> success)
+        {
+            var completion = NewCompletion();
+            int completed = 0;
+            CommandEventHandler ended = null;
+            CommandEventHandler failed = null;
+            CommandEventHandler cancelled = null;
+            Action detach = () =>
+            {
+                doc.CommandEnded -= ended;
+                doc.CommandFailed -= failed;
+                doc.CommandCancelled -= cancelled;
+            };
+            ended = (sender, args) =>
+            {
+                if (!matches(args.GlobalCommandName)) return;
+                completed++;
+                if (completed < requiredCompletions) return;
+                detach();
+                try { completion.TrySetResult(success()); }
+                catch (System.Exception exception) { completion.TrySetException(exception); }
+            };
+            failed = (sender, args) =>
+            {
+                if (!matches(args.GlobalCommandName)) return;
+                detach();
+                completion.TrySetException(new CadMcpException(failureCode, "AutoCAD command failed: " + args.GlobalCommandName));
+            };
+            cancelled = (sender, args) =>
+            {
+                if (!matches(args.GlobalCommandName)) return;
+                detach();
+                completion.TrySetException(new CadMcpException("CANCELLED", "AutoCAD command was cancelled: " + args.GlobalCommandName));
+            };
+            doc.CommandEnded += ended;
+            doc.CommandFailed += failed;
+            doc.CommandCancelled += cancelled;
+            doc.SendStringToExecute(commandText, true, false, false);
+            return completion.Task;
+        }
+
+        private static bool CommandNamesMatch(string actual, string requested)
+        {
+            string left = (actual ?? "").TrimStart('_', '.');
+            string right = (requested ?? "").TrimStart('_', '.');
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(left.TrimStart('-'), right.TrimStart('-'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static readonly HashSet<string> MutationMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "draw", "solid", "edit", "layer", "textStyle", "block", "layout"
+        };
+
+        private static bool IsMutation(string method, JObject p)
+        {
+            if (!MutationMethods.Contains(method)) return false;
+            string action = (string)p["action"];
+            return !(method == "textStyle" && action == "list") && !(method == "layout" && action == "list");
+        }
+
+        private static void ValidateMutationContext(string method, JObject p, Document document)
+        {
+            if (!IsMutation(method, p)) return;
+            if (document == null) throw new CadMcpException("NO_ACTIVE_DOCUMENT", "No active AutoCAD drawing.");
+            string expectedDocumentId = (string)p["expectedDocumentId"];
+            string actualDocumentId = document.GetHashCode().ToString("X", CultureInfo.InvariantCulture);
+            if (!string.IsNullOrWhiteSpace(expectedDocumentId) && !string.Equals(expectedDocumentId, actualDocumentId, StringComparison.OrdinalIgnoreCase))
+                throw new CadMcpException("DOCUMENT_CONFLICT", "The active AutoCAD document changed before the operation could run.", new JObject
+                {
+                    ["expectedDocumentId"] = expectedDocumentId,
+                    ["actualDocumentId"] = actualDocumentId
+                });
+            if (p["expectedRevision"] != null)
+            {
+                long expectedRevision = (long)p["expectedRevision"];
+                long actualRevision = CadEventJournal.GetRevision(document);
+                if (expectedRevision != actualRevision)
+                    throw new CadMcpException("REVISION_CONFLICT", "The drawing changed after it was inspected. Inspect again before editing.", new JObject
+                    {
+                        ["expectedRevision"] = expectedRevision,
+                        ["actualRevision"] = actualRevision,
+                        ["documentId"] = actualDocumentId
+                    });
+            }
+        }
+
+        private static JToken DispatchAndPresent(string method, JObject p)
+        {
+            JToken result = Dispatch(method, p);
+            if (IsMutation(method, p)) PresentMutation(method, p, result);
+            return result;
+        }
+
+        private static void PresentMutation(string method, JObject p, JToken result)
+        {
+            string visualMode = (string)p["visualMode"] ?? "batch";
+            if (string.Equals(visualMode, "silent", StringComparison.OrdinalIgnoreCase)) return;
+            Document doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            Editor editor = doc.Editor;
+            try { editor.Regen(); } catch { }
+            try { AcApp.UpdateScreen(); } catch { }
+            List<ObjectId> ids = ResultObjectIds(doc.Database, result);
+            if (((bool?)p["highlightResults"] ?? string.Equals(visualMode, "step", StringComparison.OrdinalIgnoreCase)) && ids.Count > 0)
+            {
+                try { editor.SetImpliedSelection(ids.Take(250).ToArray()); } catch { }
+            }
+            if ((bool?)p["zoomToResult"] == true && ids.Count > 0)
+            {
+                try { ZoomToObjectIds(editor, doc.Database, ids, 0.08); } catch { }
+            }
+            long revision = CadEventJournal.GetRevision(doc);
+            if (result is JObject resultObject)
+            {
+                resultObject["documentId"] = doc.GetHashCode().ToString("X", CultureInfo.InvariantCulture);
+                resultObject["revision"] = revision;
+            }
+            editor.WriteMessage("\n[CAD MCP] Completed " + method + "; revision " + revision + ".");
+            CadEventJournal.RecordPresentation(doc, "completed", new JObject
+            {
+                ["method"] = method,
+                ["visualMode"] = visualMode,
+                ["resultCount"] = ids.Count
+            });
+        }
+
+        private static List<ObjectId> ResultObjectIds(Database db, JToken result)
+        {
+            var handles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (result is JObject value)
+            {
+                if (value["handle"] != null) handles.Add((string)value["handle"]);
+                foreach (JToken handle in value["handles"] as JArray ?? new JArray()) handles.Add((string)handle);
+                foreach (JObject item in value["created"] as JArray ?? new JArray())
+                    if (item["handle"] != null) handles.Add((string)item["handle"]);
+            }
+            return IdsFromHandles(db, new JArray(handles), false);
+        }
+
         public static JToken Dispatch(string method, JObject p)
         {
             switch (method)
@@ -301,6 +583,7 @@ namespace AutoCAD2024Mcp
                 case "measure": return WithDocument(false, (d, db, ed) => CadMeasurement.Execute(db, p));
                 case "edit": return WithDocument(true, (d, db, ed) => Edit(db, ed, p));
                 case "layer": return WithDocument(true, (d, db, ed) => Layer(db, p));
+                case "textStyle": return WithDocument(true, (d, db, ed) => TextStyleOperation(db, ed, p));
                 case "block": return WithDocument(true, (d, db, ed) => Block(db, p));
                 case "layout": return WithDocument(true, (d, db, ed) => LayoutOperation(db, p));
                 case "export": return WithDocument(true, (d, db, ed) => Export(d, db, p));
@@ -329,7 +612,7 @@ namespace AutoCAD2024Mcp
             return new JObject
             {
                 ["connected"] = true,
-                ["mcpVersion"] = "0.0.3",
+                ["mcpVersion"] = "0.1.0",
                 ["health"] = "normal",
                 ["warnings"] = warnings,
                 ["trustedDeployment"] = trustedDeployment,
@@ -342,6 +625,7 @@ namespace AutoCAD2024Mcp
                     ["name"] = doc.Name,
                     ["path"] = doc.Database.Filename,
                     ["readOnly"] = doc.IsReadOnly,
+                    ["revision"] = CadEventJournal.GetRevision(doc),
                     ["tileMode"] = doc.Database.TileMode,
                     ["currentLayer"] = SymbolName(doc.Database.Clayer, doc.Database)
                 },
@@ -358,7 +642,7 @@ namespace AutoCAD2024Mcp
             if (action == "list")
             {
                 var items = new JArray();
-                foreach (Document d in docs) items.Add(new JObject { ["id"] = d.GetHashCode().ToString("X"), ["name"] = d.Name, ["path"] = d.Database.Filename, ["active"] = d == docs.MdiActiveDocument, ["readOnly"] = d.IsReadOnly });
+                foreach (Document d in docs) items.Add(new JObject { ["id"] = d.GetHashCode().ToString("X"), ["name"] = d.Name, ["path"] = d.Database.Filename, ["active"] = d == docs.MdiActiveDocument, ["readOnly"] = d.IsReadOnly, ["revision"] = CadEventJournal.GetRevision(d) });
                 return new JObject { ["documents"] = items };
             }
             if (action == "new")
@@ -437,7 +721,7 @@ namespace AutoCAD2024Mcp
             throw new CadMcpException("INVALID_ACTION", "Unsupported document action: " + action);
         }
 
-        private static JObject DocumentResult(Document d) => new JObject { ["id"] = d.GetHashCode().ToString("X"), ["name"] = d.Name, ["path"] = d.Database.Filename, ["readOnly"] = d.IsReadOnly };
+        private static JObject DocumentResult(Document d) => new JObject { ["id"] = d.GetHashCode().ToString("X"), ["name"] = d.Name, ["path"] = d.Database.Filename, ["readOnly"] = d.IsReadOnly, ["revision"] = CadEventJournal.GetRevision(d) };
 
         private static JToken Inspect(Database db, Editor ed, JObject p)
         {
@@ -446,7 +730,7 @@ namespace AutoCAD2024Mcp
             if (scope == "entities") return InspectEntities(db, p);
             if (scope == "layers") return ListTable<LayerTable, LayerTableRecord>(db, db.LayerTableId, r => new JObject { ["name"] = r.Name, ["colorIndex"] = r.Color.ColorIndex, ["linetype"] = SymbolName(r.LinetypeObjectId, db), ["on"] = !r.IsOff, ["frozen"] = r.IsFrozen, ["locked"] = r.IsLocked, ["plottable"] = r.IsPlottable });
             if (scope == "linetypes") return ListNames<LinetypeTable, LinetypeTableRecord>(db, db.LinetypeTableId);
-            if (scope == "textStyles") return ListNames<TextStyleTable, TextStyleTableRecord>(db, db.TextStyleTableId);
+            if (scope == "textStyles") return ListTextStyles(db);
             if (scope == "dimensionStyles") return ListNames<DimStyleTable, DimStyleTableRecord>(db, db.DimStyleTableId);
             if (scope == "blocks") return ListBlocks(db);
             if (scope == "layouts") return ListLayouts(db);
@@ -469,7 +753,8 @@ namespace AutoCAD2024Mcp
         {
             Extents3d? ext = null;
             try { ext = new Extents3d(db.Extmin, db.Extmax); } catch { }
-            return new JObject { ["filename"] = db.Filename, ["dwgVersion"] = db.OriginalFileVersion.ToString(), ["units"] = db.Insunits.ToString(), ["currentLayer"] = SymbolName(db.Clayer, db), ["currentSpace"] = db.TileMode ? "model" : "paper", ["extents"] = ext.HasValue ? ExtentsJson(ext.Value) : null, ["lastSaved"] = db.Tdupdate };
+            Document document = AcApp.DocumentManager.Cast<Document>().FirstOrDefault(item => ReferenceEquals(item.Database, db));
+            return new JObject { ["filename"] = db.Filename, ["dwgVersion"] = db.OriginalFileVersion.ToString(), ["units"] = db.Insunits.ToString(), ["currentLayer"] = SymbolName(db.Clayer, db), ["currentSpace"] = db.TileMode ? "model" : "paper", ["extents"] = ext.HasValue ? ExtentsJson(ext.Value) : null, ["lastSaved"] = db.Tdupdate, ["documentId"] = document == null ? null : document.GetHashCode().ToString("X", CultureInfo.InvariantCulture), ["revision"] = CadEventJournal.GetRevision(document) };
         }
 
         private static JToken InspectEntities(Database db, JObject p)
@@ -486,46 +771,152 @@ namespace AutoCAD2024Mcp
                     if (ent != null) entities.Add(EntityJson(ent, (bool?)p["includeGeometry"] ?? true, (bool?)p["includeExtents"] ?? true));
                 }
             }
-            return new JObject { ["total"] = ids.Count, ["offset"] = offset, ["count"] = entities.Count, ["entities"] = entities };
+            Document document = AcApp.DocumentManager.Cast<Document>().FirstOrDefault(item => ReferenceEquals(item.Database, db));
+            return new JObject { ["total"] = ids.Count, ["offset"] = offset, ["count"] = entities.Count, ["entities"] = entities, ["documentId"] = document == null ? null : document.GetHashCode().ToString("X", CultureInfo.InvariantCulture), ["revision"] = CadEventJournal.GetRevision(document) };
         }
 
         private static JToken Draw(Document doc, Database db, Editor ed, JObject p)
         {
             var created = new JArray();
-            using (Transaction tr = db.TransactionManager.StartTransaction())
+            JArray specifications = p["entities"] as JArray ?? new JArray();
+            bool stepMode = string.Equals((string)p["visualMode"], "step", StringComparison.OrdinalIgnoreCase);
+            Matrix3d inputToWorld = string.Equals((string)p["coordinateSystem"], "WCS", StringComparison.OrdinalIgnoreCase)
+                ? Matrix3d.Identity
+                : ed.CurrentUserCoordinateSystem;
+            if (!stepMode)
             {
-                BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                ObjectId spaceId = ResolveSpace(db, bt, (string)p["space"]);
-                var space = (BlockTableRecord)tr.GetObject(spaceId, OpenMode.ForWrite);
-                foreach (JObject spec in p["entities"] as JArray ?? new JArray())
+                using (Transaction transaction = db.TransactionManager.StartTransaction())
                 {
-                    if ((string)spec["type"] == "hatch")
+                    foreach (JObject specification in specifications)
                     {
-                        var hatch = new Hatch();
-                        space.AppendEntity(hatch);
-                        tr.AddNewlyCreatedDBObject(hatch, true);
-                        hatch.SetDatabaseDefaults(db);
-                        hatch.SetHatchPattern(HatchPatternType.PreDefined, (string)spec["pattern"] ?? "SOLID");
-                        if (spec["scale"] != null) hatch.PatternScale = (double)spec["scale"];
-                        if (spec["angle"] != null) hatch.PatternAngle = (double)spec["angle"];
-                        hatch.Associative = (bool?)spec["associative"] ?? true;
-                        var boundary = new ObjectIdCollection(IdsFromHandles(db, spec["boundaryHandles"] as JArray).ToArray());
-                        hatch.AppendLoop(HatchLoopTypes.Default, boundary);
-                        hatch.EvaluateHatch(true);
-                        ApplyCommon(hatch, spec);
-                        created.Add(new JObject { ["handle"] = hatch.Handle.ToString(), ["type"] = hatch.GetRXClass().DxfName, ["objectId"] = hatch.ObjectId.ToString() });
-                        continue;
+                        created.Add(AppendDrawEntity(transaction, db, specification, (string)p["space"], inputToWorld, out ObjectId ignored));
                     }
-                    CadEntity ent = CreateEntity(tr, db, spec);
-                    space.AppendEntity(ent);
-                    tr.AddNewlyCreatedDBObject(ent, true);
-                    ApplyCommon(ent, spec);
-                    created.Add(new JObject { ["handle"] = ent.Handle.ToString(), ["type"] = ent.GetRXClass().DxfName, ["objectId"] = ent.ObjectId.ToString() });
+                    transaction.Commit();
                 }
-                tr.Commit();
             }
-            if ((bool?)p["zoomToResult"] == true) doc.SendStringToExecute("_.ZOOM\r_E\r", true, false, false);
-            return new JObject { ["created"] = created, ["count"] = created.Count };
+            else
+            {
+                try
+                {
+                    int index = 0;
+                    foreach (JObject specification in specifications)
+                    {
+                        ObjectId createdId;
+                        JObject item;
+                        using (Transaction transaction = db.TransactionManager.StartTransaction())
+                        {
+                            item = AppendDrawEntity(transaction, db, specification, (string)p["space"], inputToWorld, out createdId);
+                            transaction.Commit();
+                        }
+                        created.Add(item);
+                        index++;
+                        PresentDrawStep(doc, ed, createdId, index, specifications.Count, (string)specification["type"], (bool?)p["highlightResults"] ?? true);
+                    }
+                }
+                catch (System.Exception exception)
+                {
+                    CleanupCreated(db, created);
+                    try { ed.Regen(); AcApp.UpdateScreen(); } catch { }
+                    throw new CadMcpException("DRAW_STEP_FAILED", "Step-mode drawing failed and committed entities were removed.", new JObject
+                    {
+                        ["completedSteps"] = created.Count,
+                        ["cause"] = exception.Message
+                    });
+                }
+            }
+            return new JObject { ["created"] = created, ["count"] = created.Count, ["visualMode"] = stepMode ? "step" : "batch" };
+        }
+
+        private static JObject AppendDrawEntity(Transaction transaction, Database db, JObject specification, string requestedSpace,
+            Matrix3d inputToWorld, out ObjectId createdId)
+        {
+            BlockTable blockTable = (BlockTable)transaction.GetObject(db.BlockTableId, OpenMode.ForRead);
+            ObjectId spaceId = ResolveSpace(db, blockTable, requestedSpace);
+            var space = (BlockTableRecord)transaction.GetObject(spaceId, OpenMode.ForWrite);
+            CadEntity entity;
+            if ((string)specification["type"] == "hatch")
+            {
+                var hatch = new Hatch();
+                space.AppendEntity(hatch);
+                transaction.AddNewlyCreatedDBObject(hatch, true);
+                hatch.SetDatabaseDefaults(db);
+                hatch.SetHatchPattern(HatchPatternType.PreDefined, (string)specification["pattern"] ?? "SOLID");
+                if (specification["scale"] != null) hatch.PatternScale = (double)specification["scale"];
+                if (specification["angle"] != null) hatch.PatternAngle = (double)specification["angle"];
+                hatch.Associative = (bool?)specification["associative"] ?? true;
+                var boundary = new ObjectIdCollection(IdsFromHandles(db, specification["boundaryHandles"] as JArray).ToArray());
+                hatch.AppendLoop(HatchLoopTypes.Default, boundary);
+                hatch.EvaluateHatch(true);
+                entity = hatch;
+            }
+            else
+            {
+                entity = CreateEntity(transaction, db, specification);
+                if (!inputToWorld.IsEqualTo(Matrix3d.Identity)) entity.TransformBy(inputToWorld);
+                space.AppendEntity(entity);
+                transaction.AddNewlyCreatedDBObject(entity, true);
+                if (entity is BlockReference blockReference) AppendBlockAttributes(transaction, blockReference, specification["attributes"] as JObject);
+                if (entity is Table table) table.GenerateLayout();
+            }
+            ApplyCommon(entity, specification);
+            createdId = entity.ObjectId;
+            return new JObject
+            {
+                ["handle"] = entity.Handle.ToString(),
+                ["type"] = entity.GetRXClass().DxfName,
+                ["objectId"] = entity.ObjectId.ToString()
+            };
+        }
+
+        private static void AppendBlockAttributes(Transaction transaction, BlockReference reference, JObject values)
+        {
+            if (values == null || values.Count == 0) return;
+            var definition = (BlockTableRecord)transaction.GetObject(reference.BlockTableRecord, OpenMode.ForRead);
+            foreach (ObjectId id in definition)
+            {
+                AttributeDefinition attributeDefinition = transaction.GetObject(id, OpenMode.ForRead, false) as AttributeDefinition;
+                if (attributeDefinition == null || attributeDefinition.Constant) continue;
+                string value = (string)values[attributeDefinition.Tag];
+                if (value == null) continue;
+                var attribute = new AttributeReference();
+                attribute.SetAttributeFromBlock(attributeDefinition, reference.BlockTransform);
+                attribute.TextString = value;
+                reference.AttributeCollection.AppendAttribute(attribute);
+                transaction.AddNewlyCreatedDBObject(attribute, true);
+            }
+        }
+
+        private static void PresentDrawStep(Document document, Editor editor, ObjectId id, int index, int total, string entityType, bool highlight)
+        {
+            try { editor.Regen(); } catch { }
+            try { AcApp.UpdateScreen(); } catch { }
+            if (highlight)
+            {
+                try { editor.SetImpliedSelection(new[] { id }); } catch { }
+            }
+            editor.WriteMessage("\n[CAD MCP] Draw step " + index + "/" + total + ": " + entityType + ".");
+            CadEventJournal.RecordPresentation(document, "step", new JObject
+            {
+                ["index"] = index,
+                ["total"] = total,
+                ["entityType"] = entityType,
+                ["handle"] = id.Handle.ToString()
+            });
+        }
+
+        private static void CleanupCreated(Database db, JArray created)
+        {
+            JArray handles = new JArray(created.OfType<JObject>().Select(item => item["handle"]));
+            List<ObjectId> ids = IdsFromHandles(db, handles, false);
+            using (Transaction transaction = db.TransactionManager.StartTransaction())
+            {
+                foreach (ObjectId id in ids)
+                {
+                    DBObject value = transaction.GetObject(id, OpenMode.ForWrite, false);
+                    if (!value.IsErased) value.Erase();
+                }
+                transaction.Commit();
+            }
         }
 
         private static CadEntity CreateEntity(Transaction tr, Database db, JObject s)
@@ -541,9 +932,54 @@ namespace AutoCAD2024Mcp
                 foreach (JToken item in (JArray)s["points"]) pl.AddVertexAt(i++, P2(item), 0, (double?)s["width"] ?? 0, (double?)s["width"] ?? 0);
                 pl.Closed = (bool?)s["closed"] ?? false; return pl;
             }
+            if (type == "polyline3d")
+            {
+                var points = new Point3dCollection();
+                foreach (JToken item in (JArray)s["points"]) points.Add(P3(item));
+                return new Polyline3d(Poly3dType.SimplePoly, points, (bool?)s["closed"] ?? false);
+            }
+            if (type == "spline")
+            {
+                var points = new Point3dCollection();
+                foreach (JToken item in (JArray)s["fitPoints"]) points.Add(P3(item));
+                int degree = Math.Min((int?)s["degree"] ?? 3, points.Count - 1);
+                if (degree < 1) throw new CadMcpException("INVALID_ARGUMENT", "spline degree must be smaller than the number of fit points.");
+                return new Spline(points, degree, (double?)s["fitTolerance"] ?? 1e-7);
+            }
+            if (type == "ray" || type == "xline")
+            {
+                Point3d basePoint = P3(s["basePoint"]);
+                Vector3d direction = P3(s["throughPoint"]) - basePoint;
+                if (direction.Length < 1e-9) throw new CadMcpException("INVALID_ARGUMENT", type + " direction cannot be zero.");
+                if (type == "ray") return new Ray { BasePoint = basePoint, UnitDir = direction.GetNormal() };
+                return new Xline { BasePoint = basePoint, UnitDir = direction.GetNormal() };
+            }
             if (type == "ellipse") return new Ellipse(P3(s["center"]), Vector3d.ZAxis, V3(s["majorAxis"]), (double)s["radiusRatio"], (double?)s["startParameter"] ?? 0, (double?)s["endParameter"] ?? Math.PI * 2);
-            if (type == "text") return new DBText { Position = P3(s["position"]), TextString = (string)s["text"], Height = (double)s["height"], Rotation = (double?)s["rotation"] ?? 0 };
-            if (type == "mtext") return new MText { Location = P3(s["position"]), Contents = (string)s["text"], TextHeight = (double)s["height"], Width = (double)s["width"], Rotation = (double?)s["rotation"] ?? 0 };
+            if (type == "text")
+            {
+                string value = (string)s["text"] ?? "";
+                return new DBText
+                {
+                    Position = P3(s["position"]),
+                    TextString = value,
+                    Height = (double)s["height"],
+                    Rotation = (double?)s["rotation"] ?? 0,
+                    TextStyleId = ResolveTextStyle(db, tr, (string)s["style"], value)
+                };
+            }
+            if (type == "mtext")
+            {
+                string value = (string)s["text"] ?? "";
+                return new MText
+                {
+                    Location = P3(s["position"]),
+                    Contents = value,
+                    TextHeight = (double)s["height"],
+                    Width = (double)s["width"],
+                    Rotation = (double?)s["rotation"] ?? 0,
+                    TextStyleId = ResolveTextStyle(db, tr, (string)s["style"], value)
+                };
+            }
             if (type == "blockReference")
             {
                 BlockTable bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
@@ -552,8 +988,43 @@ namespace AutoCAD2024Mcp
                 if (s["scale"] != null) { Vector3d scale = V3(s["scale"]); br.ScaleFactors = new Scale3d(scale.X, scale.Y, scale.Z); }
                 return br;
             }
-            if (type == "alignedDimension") return new AlignedDimension(P3(s["first"]), P3(s["second"]), P3(s["dimensionLine"]), "", db.Dimstyle);
-            if (type == "rotatedDimension") return new RotatedDimension((double)s["rotation"], P3(s["first"]), P3(s["second"]), P3(s["dimensionLine"]), "", db.Dimstyle);
+            if (type == "leader")
+            {
+                var leader = new Leader { HasArrowHead = (bool?)s["hasArrowHead"] ?? true };
+                foreach (JToken point in (JArray)s["points"]) leader.AppendVertex(P3(point));
+                return leader;
+            }
+            if (type == "table")
+            {
+                JArray rows = (JArray)s["rows"];
+                int rowCount = rows.Count;
+                int columnCount = rows.OfType<JArray>().Max(row => row.Count);
+                var table = new Table { Position = P3(s["position"]), TableStyle = db.Tablestyle };
+                table.SetSize(rowCount, columnCount);
+                table.SetRowHeight((double?)s["rowHeight"] ?? 8.0);
+                table.SetColumnWidth((double?)s["columnWidth"] ?? 30.0);
+                string allText = string.Join("", rows.SelectMany(row => row.Values<string>()));
+                ObjectId styleId = ResolveTextStyle(db, tr, (string)s["style"], allText);
+                for (int rowIndex = 0; rowIndex < rowCount; rowIndex++)
+                {
+                    JArray row = (JArray)rows[rowIndex];
+                    for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+                    {
+                        string text = columnIndex < row.Count ? (string)row[columnIndex] ?? "" : "";
+                        table.Cells[rowIndex, columnIndex].TextString = text;
+                        table.Cells[rowIndex, columnIndex].TextStyleId = styleId;
+                        if (s["textHeight"] != null) table.Cells[rowIndex, columnIndex].TextHeight = (double)s["textHeight"];
+                    }
+                }
+                return table;
+            }
+            string dimensionText = (string)s["dimensionText"] ?? "";
+            ObjectId dimensionStyle = ResolveDimensionStyle(db, tr, (string)s["style"]);
+            if (type == "alignedDimension") return new AlignedDimension(P3(s["first"]), P3(s["second"]), P3(s["dimensionLine"]), dimensionText, dimensionStyle);
+            if (type == "rotatedDimension") return new RotatedDimension((double)s["rotation"], P3(s["first"]), P3(s["second"]), P3(s["dimensionLine"]), dimensionText, dimensionStyle);
+            if (type == "radialDimension") return new RadialDimension(P3(s["center"]), P3(s["chordPoint"]), (double?)s["leaderLength"] ?? 10.0, dimensionText, dimensionStyle);
+            if (type == "diametricDimension") return new DiametricDimension(P3(s["chordPoint"]), P3(s["farChordPoint"]), (double?)s["leaderLength"] ?? 10.0, dimensionText, dimensionStyle);
+            if (type == "angularDimension2Line") return new LineAngularDimension2(P3(s["line1Start"]), P3(s["line1End"]), P3(s["line2Start"]), P3(s["line2End"]), P3(s["arcPoint"]), dimensionText, dimensionStyle);
             throw new CadMcpException("UNSUPPORTED_ENTITY", "Unsupported entity type: " + type);
         }
 
@@ -591,6 +1062,74 @@ namespace AutoCAD2024Mcp
             return new JObject { ["matched"] = ids.Count, ["resultCount"] = resulting.Count, ["handles"] = new JArray(resulting.Where(id => id.IsValid && !id.IsErased).Select(id => id.Handle.ToString())) };
         }
 
+        private static JToken TextStyleOperation(Database db, Editor ed, JObject p)
+        {
+            string action = RequiredString(p, "action");
+            if (action == "list") return ListTextStyles(db);
+
+            string name = RequiredString(p, "name");
+            if (action == "apply")
+            {
+                JObject target = p["target"] as JObject;
+                if (target == null) throw new CadMcpException("INVALID_TARGET", "target is required when applying a text style.");
+                List<ObjectId> ids = ResolveTargets(db, target, false);
+                int applied = 0, skipped = 0;
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    TextStyleTable table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+                    if (!table.Has(name)) throw new CadMcpException("TEXT_STYLE_NOT_FOUND", "Text style not found: " + name);
+                    ObjectId styleId = table[name];
+                    foreach (ObjectId id in ids)
+                    {
+                        DBObject obj = tr.GetObject(id, OpenMode.ForWrite, false);
+                        if (obj is DBText text) { text.TextStyleId = styleId; applied++; }
+                        else if (obj is MText mtext) { mtext.TextStyleId = styleId; applied++; }
+                        else skipped++;
+                    }
+                    tr.Commit();
+                }
+                ed.Regen();
+                return new JObject { ["action"] = action, ["name"] = name, ["matched"] = ids.Count, ["applied"] = applied, ["skipped"] = skipped };
+            }
+
+            JObject result;
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                TextStyleTable table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+                if (action == "create")
+                {
+                    if (table.Has(name)) throw new CadMcpException("TEXT_STYLE_EXISTS", "Text style already exists: " + name);
+                    table.UpgradeOpen();
+                    var record = new TextStyleTableRecord { Name = name };
+                    ApplyTextStyleProperties(record, p, true);
+                    table.Add(record);
+                    tr.AddNewlyCreatedDBObject(record, true);
+                    result = TextStyleJson(record, db.Textstyle);
+                }
+                else
+                {
+                    if (!table.Has(name)) throw new CadMcpException("TEXT_STYLE_NOT_FOUND", "Text style not found: " + name);
+                    ObjectId id = table[name];
+                    if (action == "update")
+                    {
+                        var record = (TextStyleTableRecord)tr.GetObject(id, OpenMode.ForWrite);
+                        ApplyTextStyleProperties(record, p, false);
+                        result = TextStyleJson(record, db.Textstyle);
+                    }
+                    else if (action == "setCurrent")
+                    {
+                        db.Textstyle = id;
+                        var record = (TextStyleTableRecord)tr.GetObject(id, OpenMode.ForRead);
+                        result = TextStyleJson(record, id);
+                    }
+                    else throw new CadMcpException("INVALID_ACTION", "Unsupported text style action: " + action);
+                }
+                tr.Commit();
+            }
+            result["action"] = action;
+            return result;
+        }
+
         private static JToken Layer(Database db, JObject p)
         {
             string action = RequiredString(p, "action"), name = (string)p["name"];
@@ -600,10 +1139,10 @@ namespace AutoCAD2024Mcp
                 if (action == "create")
                 {
                     if (string.IsNullOrWhiteSpace(name)) throw new CadMcpException("INVALID_ARGUMENT", "Layer name is required.");
-                    if (!table.Has(name)) { table.UpgradeOpen(); var rec = new LayerTableRecord { Name = name }; table.Add(rec); tr.AddNewlyCreatedDBObject(rec, true); ApplyLayer(rec, p["properties"] as JObject); }
+                    if (!table.Has(name)) { table.UpgradeOpen(); var rec = new LayerTableRecord { Name = name }; table.Add(rec); tr.AddNewlyCreatedDBObject(rec, true); ApplyLayer(db, tr, rec, p["properties"] as JObject); }
                 }
                 else if (action == "setCurrent") { EnsureLayer(table, name); db.Clayer = table[name]; }
-                else if (action == "update") { EnsureLayer(table, name); var rec = (LayerTableRecord)tr.GetObject(table[name], OpenMode.ForWrite); ApplyLayer(rec, p["properties"] as JObject); }
+                else if (action == "update") { EnsureLayer(table, name); var rec = (LayerTableRecord)tr.GetObject(table[name], OpenMode.ForWrite); ApplyLayer(db, tr, rec, p["properties"] as JObject); }
                 else if (action == "rename") { EnsureLayer(table, name); var rec = (LayerTableRecord)tr.GetObject(table[name], OpenMode.ForWrite); rec.Name = RequiredString(p, "newName"); }
                 else if (action == "delete") { EnsureLayer(table, name); if (table[name] == db.Clayer) throw new CadMcpException("CURRENT_LAYER", "Cannot delete the current layer."); ((LayerTableRecord)tr.GetObject(table[name], OpenMode.ForWrite)).Erase(); }
                 else if (action == "isolate") { foreach (ObjectId id in table) { var rec = (LayerTableRecord)tr.GetObject(id, OpenMode.ForWrite); rec.IsOff = !rec.Name.Equals(name, StringComparison.OrdinalIgnoreCase); } }
@@ -629,7 +1168,7 @@ namespace AutoCAD2024Mcp
                 else if (action == "insert")
                 {
                     if (!bt.Has(name)) throw new CadMcpException("BLOCK_NOT_FOUND", "Block not found: " + name);
-                    BlockTableRecord space = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite); var br = new BlockReference(p["insertionPoint"] == null ? Point3d.Origin : P3(p["insertionPoint"]), bt[name]); br.Rotation = (double?)p["rotation"] ?? 0; if (p["scale"] != null) { Vector3d v = V3(p["scale"]); br.ScaleFactors = new Scale3d(v.X, v.Y, v.Z); } space.AppendEntity(br); tr.AddNewlyCreatedDBObject(br, true);
+                    BlockTableRecord space = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite); var br = new BlockReference(p["insertionPoint"] == null ? Point3d.Origin : P3(p["insertionPoint"]), bt[name]); br.Rotation = (double?)p["rotation"] ?? 0; if (p["scale"] != null) { Vector3d v = V3(p["scale"]); br.ScaleFactors = new Scale3d(v.X, v.Y, v.Z); } space.AppendEntity(br); tr.AddNewlyCreatedDBObject(br, true); AppendBlockAttributes(tr, br, p["attributes"] as JObject);
                     tr.Commit(); return new JObject { ["name"] = name, ["handle"] = br.Handle.ToString() };
                 }
                 else if (action == "import")
@@ -696,19 +1235,118 @@ namespace AutoCAD2024Mcp
         private static JToken View(Document doc, Editor ed, JObject p)
         {
             string action = RequiredString(p, "action");
-            bool queued = false;
-            if (action == "zoomExtents") { doc.SendStringToExecute("_.ZOOM\r_E\r", true, false, false); queued = true; }
-            else if (action == "regen") ed.Regen();
+            if (action == "zoomExtents") ZoomToExtents(ed, doc.Database, 0.05);
+            else if (action == "regen")
+            {
+                ed.Regen();
+                AcApp.UpdateScreen();
+            }
             else if (action == "zoomWindow")
             {
-                JArray w = (JArray)p["window"];
-                Point3d a = P3(w[0]), b = P3(w[1]);
-                string command = string.Format(CultureInfo.InvariantCulture, "_.ZOOM\r_W\r{0},{1},{2}\r{3},{4},{5}\r", a.X, a.Y, a.Z, b.X, b.Y, b.Z);
-                doc.SendStringToExecute(command, true, false, false); queued = true;
+                JArray window = p["window"] as JArray ?? throw new CadMcpException("INVALID_ARGUMENT", "window is required for zoomWindow.");
+                SetViewToExtents(ed, new Extents3d(P3(window[0]), P3(window[1])), 0);
             }
-            else if (action == "setView") { doc.SendStringToExecute("_.-VIEW\r_R\r\"" + RequiredString(p, "viewName").Replace("\"", "") + "\"\r", true, false, false); queued = true; }
+            else if (action == "zoomObjects")
+            {
+                JArray handles = p["handles"] as JArray ?? throw new CadMcpException("INVALID_ARGUMENT", "handles is required for zoomObjects.");
+                ZoomToObjectIds(ed, doc.Database, IdsFromHandles(doc.Database, handles), 0.08);
+            }
+            else if (action == "pan")
+            {
+                JArray delta = p["delta"] as JArray ?? throw new CadMcpException("INVALID_ARGUMENT", "delta is required for pan.");
+                using (ViewTableRecord view = ed.GetCurrentView())
+                {
+                    view.CenterPoint = new Point2d(view.CenterPoint.X + (double)delta[0], view.CenterPoint.Y + (double)delta[1]);
+                    ed.SetCurrentView(view);
+                }
+            }
+            else if (action == "orbit")
+            {
+                JArray delta = p["delta"] as JArray ?? throw new CadMcpException("INVALID_ARGUMENT", "delta is required for orbit.");
+                using (ViewTableRecord view = ed.GetCurrentView())
+                {
+                    Vector3d direction = view.ViewDirection.Length < 1e-9 ? Vector3d.ZAxis : view.ViewDirection.GetNormal();
+                    direction = direction.TransformBy(Matrix3d.Rotation((double)delta[0], Vector3d.ZAxis, Point3d.Origin));
+                    Vector3d right = Vector3d.ZAxis.CrossProduct(direction);
+                    if (right.Length < 1e-9) right = Vector3d.XAxis;
+                    direction = direction.TransformBy(Matrix3d.Rotation((double)delta[1], right.GetNormal(), Point3d.Origin));
+                    view.ViewDirection = direction;
+                    ed.SetCurrentView(view);
+                }
+            }
+            else if (action == "setView")
+            {
+                string viewName = RequiredString(p, "viewName");
+                using (Transaction transaction = doc.Database.TransactionManager.StartOpenCloseTransaction())
+                {
+                    ViewTable table = (ViewTable)transaction.GetObject(doc.Database.ViewTableId, OpenMode.ForRead);
+                    if (!table.Has(viewName)) throw new CadMcpException("VIEW_NOT_FOUND", "Named view not found: " + viewName);
+                    ViewTableRecord view = (ViewTableRecord)transaction.GetObject(table[viewName], OpenMode.ForRead);
+                    ed.SetCurrentView(view);
+                }
+            }
+            else if (action == "capture") throw new CadMcpException("INVALID_CONTEXT", "capture must be dispatched asynchronously.");
             else throw new CadMcpException("INVALID_ACTION", "This view action is not implemented in the in-process endpoint: " + action);
-            return new JObject { ["action"] = action, ["ok"] = true, ["queued"] = queued };
+            try { AcApp.UpdateScreen(); } catch { }
+            return new JObject { ["action"] = action, ["ok"] = true, ["queued"] = false, ["confirmed"] = true };
+        }
+
+        private static void ZoomToExtents(Editor editor, Database database, double margin)
+        {
+            Extents3d extents;
+            try { extents = new Extents3d(database.Extmin, database.Extmax); }
+            catch { return; }
+            SetViewToExtents(editor, extents, margin);
+        }
+
+        private static void ZoomToObjectIds(Editor editor, Database database, IEnumerable<ObjectId> objectIds, double margin)
+        {
+            Extents3d? combined = null;
+            using (Transaction transaction = database.TransactionManager.StartOpenCloseTransaction())
+            {
+                foreach (ObjectId id in objectIds.Where(value => value.IsValid && !value.IsErased))
+                {
+                    Entity entity = transaction.GetObject(id, OpenMode.ForRead, false) as Entity;
+                    if (entity == null) continue;
+                    try
+                    {
+                        Extents3d extents = entity.GeometricExtents;
+                        if (!combined.HasValue) combined = extents;
+                        else
+                        {
+                            Extents3d current = combined.Value;
+                            current.AddExtents(extents);
+                            combined = current;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            if (combined.HasValue) SetViewToExtents(editor, combined.Value, margin);
+        }
+
+        private static void SetViewToExtents(Editor editor, Extents3d worldExtents, double margin)
+        {
+            using (ViewTableRecord view = editor.GetCurrentView())
+            {
+                Matrix3d worldToDisplay = Matrix3d.PlaneToWorld(view.ViewDirection);
+                worldToDisplay = Matrix3d.Displacement(view.Target - Point3d.Origin) * worldToDisplay;
+                worldToDisplay = Matrix3d.Rotation(-view.ViewTwist, view.ViewDirection, view.Target) * worldToDisplay;
+                worldToDisplay = worldToDisplay.Inverse();
+                Extents3d displayExtents = worldExtents;
+                displayExtents.TransformBy(worldToDisplay);
+                double width = Math.Max(displayExtents.MaxPoint.X - displayExtents.MinPoint.X, 1e-6) * (1 + margin * 2);
+                double height = Math.Max(displayExtents.MaxPoint.Y - displayExtents.MinPoint.Y, 1e-6) * (1 + margin * 2);
+                double viewRatio = view.Width > 1e-9 && view.Height > 1e-9 ? view.Width / view.Height : 1.0;
+                if (width / height > viewRatio) height = width / viewRatio;
+                else width = height * viewRatio;
+                view.Width = width;
+                view.Height = height;
+                view.CenterPoint = new Point2d(
+                    (displayExtents.MinPoint.X + displayExtents.MaxPoint.X) / 2,
+                    (displayExtents.MinPoint.Y + displayExtents.MaxPoint.Y) / 2);
+                editor.SetCurrentView(view);
+            }
         }
 
         private static JToken Undo(Document doc, JObject p)
@@ -782,13 +1420,27 @@ namespace AutoCAD2024Mcp
             return true;
         }
 
-        private static List<ObjectId> IdsFromHandles(Database db, JArray handles)
+        private static List<ObjectId> IdsFromHandles(Database db, JArray handles) => IdsFromHandles(db, handles, true);
+
+        private static List<ObjectId> IdsFromHandles(Database db, JArray handles, bool throwOnMissing)
         {
             var ids = new List<ObjectId>();
             foreach (JToken token in handles ?? new JArray())
             {
-                if (!long.TryParse((string)token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long value)) throw new CadMcpException("INVALID_HANDLE", "Invalid entity handle: " + token);
-                try { ids.Add(db.GetObjectId(false, new Handle(value), 0)); } catch { throw new CadMcpException("HANDLE_NOT_FOUND", "Entity handle not found: " + token); }
+                if (!long.TryParse((string)token, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out long value))
+                {
+                    if (throwOnMissing) throw new CadMcpException("INVALID_HANDLE", "Invalid entity handle: " + token);
+                    continue;
+                }
+                try
+                {
+                    ObjectId id = db.GetObjectId(false, new Handle(value), 0);
+                    if (id.IsValid && !id.IsErased) ids.Add(id);
+                }
+                catch
+                {
+                    if (throwOnMissing) throw new CadMcpException("HANDLE_NOT_FOUND", "Entity handle not found: " + token);
+                }
             }
             return ids;
         }
@@ -802,6 +1454,11 @@ namespace AutoCAD2024Mcp
             else if (e is Circle c) { j["center"] = PointJson(c.Center); j["radius"] = c.Radius; j["circumference"] = c.Circumference; j["area"] = c.Area; }
             else if (e is Arc a) { j["center"] = PointJson(a.Center); j["radius"] = a.Radius; j["startAngle"] = a.StartAngle; j["endAngle"] = a.EndAngle; j["length"] = a.Length; }
             else if (e is Polyline pl) { var points = new JArray(); for (int i = 0; i < pl.NumberOfVertices; i++) points.Add(PointJson(pl.GetPoint3dAt(i))); j["points"] = points; j["closed"] = pl.Closed; j["length"] = pl.Length; if (pl.Closed) { try { j["area"] = pl.Area; } catch { } } }
+            else if (e is Spline spline) { var points = new JArray(); for (int i = 0; i < spline.NumFitPoints; i++) points.Add(PointJson(spline.GetFitPointAt(i))); j["fitPoints"] = points; j["degree"] = spline.Degree; j["closed"] = spline.Closed; }
+            else if (e is Ray ray) { j["basePoint"] = PointJson(ray.BasePoint); j["unitDirection"] = new JArray(ray.UnitDir.X, ray.UnitDir.Y, ray.UnitDir.Z); }
+            else if (e is Xline xline) { j["basePoint"] = PointJson(xline.BasePoint); j["unitDirection"] = new JArray(xline.UnitDir.X, xline.UnitDir.Y, xline.UnitDir.Z); }
+            else if (e is Leader leader) { var points = new JArray(); for (int i = 0; i < leader.NumVertices; i++) points.Add(PointJson(leader.VertexAt(i))); j["points"] = points; j["hasArrowHead"] = leader.HasArrowHead; }
+            else if (e is Table table) { var rows = new JArray(); for (int row = 0; row < table.Rows.Count; row++) { var values = new JArray(); for (int column = 0; column < table.Columns.Count; column++) values.Add(table.Cells[row, column].TextString); rows.Add(values); } j["position"] = PointJson(table.Position); j["rows"] = rows; }
             else if (e is DBText dt) { j["text"] = dt.TextString; j["position"] = PointJson(dt.Position); j["height"] = dt.Height; j["rotation"] = dt.Rotation; }
             else if (e is MText mt) { j["text"] = mt.Contents; j["position"] = PointJson(mt.Location); j["height"] = mt.TextHeight; j["width"] = mt.Width; j["rotation"] = mt.Rotation; }
             else if (e is BlockReference br) { j["name"] = br.Name; j["insertionPoint"] = PointJson(br.Position); j["rotation"] = br.Rotation; j["scale"] = new JArray(br.ScaleFactors.X, br.ScaleFactors.Y, br.ScaleFactors.Z); }
@@ -833,6 +1490,107 @@ namespace AutoCAD2024Mcp
             return new JObject { ["materials"] = result, ["count"] = result.Count };
         }
 
+        private static JToken ListTextStyles(Database db)
+        {
+            var items = new JArray();
+            using (Transaction tr = db.TransactionManager.StartOpenCloseTransaction())
+            {
+                TextStyleTable table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+                foreach (ObjectId id in table)
+                {
+                    var record = (TextStyleTableRecord)tr.GetObject(id, OpenMode.ForRead);
+                    items.Add(TextStyleJson(record, db.Textstyle));
+                }
+            }
+            return new JObject { ["items"] = items, ["count"] = items.Count, ["recommendedCjkStyle"] = ChineseTextStyleName };
+        }
+
+        private static JObject TextStyleJson(TextStyleTableRecord record, ObjectId currentId)
+        {
+            return new JObject
+            {
+                ["name"] = record.Name,
+                ["fileName"] = record.FileName,
+                ["bigFontFileName"] = record.BigFontFileName,
+                ["xScale"] = record.XScale,
+                ["obliqueAngle"] = record.ObliquingAngle,
+                ["vertical"] = record.IsVertical,
+                ["current"] = record.ObjectId == currentId,
+                ["fontAvailable"] = FontAvailable(record.FileName)
+            };
+        }
+
+        private static bool FontAvailable(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return false;
+            if (Path.IsPathRooted(fileName)) return File.Exists(fileName);
+            string fonts = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            return File.Exists(Path.Combine(fonts, Path.GetFileName(fileName))) || File.Exists(fileName);
+        }
+
+        private static void ApplyTextStyleProperties(TextStyleTableRecord record, JObject p, bool defaultFont)
+        {
+            if (p["fontFile"] != null) record.FileName = (string)p["fontFile"];
+            else if (defaultFont) record.FileName = ChooseChineseFont();
+            if (p["bigFontFile"] != null) record.BigFontFileName = (string)p["bigFontFile"];
+            if (p["xScale"] != null) record.XScale = (double)p["xScale"];
+            if (p["obliqueAngle"] != null) record.ObliquingAngle = (double)p["obliqueAngle"];
+            if (p["vertical"] != null) record.IsVertical = (bool)p["vertical"];
+        }
+
+        private static ObjectId ResolveTextStyle(Database db, Transaction tr, string requested, string text)
+        {
+            TextStyleTable table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+            if (!string.IsNullOrWhiteSpace(requested))
+            {
+                if (!table.Has(requested)) throw new CadMcpException("TEXT_STYLE_NOT_FOUND", "Text style not found: " + requested);
+                return table[requested];
+            }
+            return ContainsCjk(text) ? EnsureChineseTextStyle(db, tr) : db.Textstyle;
+        }
+
+        private static ObjectId ResolveDimensionStyle(Database db, Transaction transaction, string requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested)) return db.Dimstyle;
+            DimStyleTable table = (DimStyleTable)transaction.GetObject(db.DimStyleTableId, OpenMode.ForRead);
+            if (!table.Has(requested)) throw new CadMcpException("DIMENSION_STYLE_NOT_FOUND", "Dimension style not found: " + requested);
+            return table[requested];
+        }
+
+        private static ObjectId EnsureChineseTextStyle(Database db, Transaction tr)
+        {
+            TextStyleTable table = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+            if (table.Has(ChineseTextStyleName)) return table[ChineseTextStyleName];
+            table.UpgradeOpen();
+            var record = new TextStyleTableRecord { Name = ChineseTextStyleName, FileName = ChooseChineseFont(), XScale = 1.0 };
+            ObjectId id = table.Add(record);
+            tr.AddNewlyCreatedDBObject(record, true);
+            return id;
+        }
+
+        private static string ChooseChineseFont()
+        {
+            string fonts = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            foreach (string candidate in new[] { "msyh.ttc", "simsun.ttc" })
+            {
+                if (File.Exists(Path.Combine(fonts, candidate))) return candidate;
+            }
+            throw new CadMcpException("FONT_NOT_FOUND", "No supported Chinese font was found. Install Microsoft YaHei or SimSun.");
+        }
+
+        private static bool ContainsCjk(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            foreach (char ch in value)
+            {
+                if ((ch >= '\u3400' && ch <= '\u4DBF') ||
+                    (ch >= '\u4E00' && ch <= '\u9FFF') ||
+                    (ch >= '\uF900' && ch <= '\uFAFF'))
+                    return true;
+            }
+            return false;
+        }
+
         private static JToken ListNames<TTable, TRecord>(Database db, ObjectId id) where TTable : SymbolTable where TRecord : SymbolTableRecord => ListTable<TTable, TRecord>(db, id, r => new JObject { ["name"] = r.Name });
         private static JToken ListTable<TTable, TRecord>(Database db, ObjectId id, Func<TRecord, JObject> map) where TTable : SymbolTable where TRecord : SymbolTableRecord
         {
@@ -844,14 +1602,23 @@ namespace AutoCAD2024Mcp
             if (p["layer"] != null) e.Layer = (string)p["layer"];
             if (p["colorIndex"] != null) e.Color = Color.FromColorIndex(ColorMethod.ByAci, (short)(int)p["colorIndex"]);
             if (p["linetype"] != null) e.Linetype = (string)p["linetype"];
+            if (p["linetypeScale"] != null) e.LinetypeScale = (double)p["linetypeScale"];
             if (p["lineweight"] != null) e.LineWeight = (LineWeight)(int)p["lineweight"];
+            if (p["visible"] != null) e.Visible = (bool)p["visible"];
         }
 
-        private static void ApplyLayer(LayerTableRecord r, JObject p)
+        private static void ApplyLayer(Database db, Transaction transaction, LayerTableRecord r, JObject p)
         {
             if (p == null) return;
             if (p["colorIndex"] != null) r.Color = Color.FromColorIndex(ColorMethod.ByAci, (short)(int)p["colorIndex"]);
             if (p["lineweight"] != null) r.LineWeight = (LineWeight)(int)p["lineweight"];
+            if (p["linetype"] != null)
+            {
+                string name = (string)p["linetype"];
+                LinetypeTable table = (LinetypeTable)transaction.GetObject(db.LinetypeTableId, OpenMode.ForRead);
+                if (!table.Has(name)) throw new CadMcpException("LINETYPE_NOT_FOUND", "Linetype not found: " + name);
+                r.LinetypeObjectId = table[name];
+            }
             if (p["on"] != null) r.IsOff = !(bool)p["on"];
             if (p["frozen"] != null) r.IsFrozen = (bool)p["frozen"];
             if (p["locked"] != null) r.IsLocked = (bool)p["locked"];

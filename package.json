@@ -1,6 +1,6 @@
 {
   "name": "autocad-2024-mcp",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Local MCP bridge for natural-language control of AutoCAD 2024",
@@ -16,7 +16,12 @@
     "bench": "npm run build && node scripts/bench-recipes.mjs",
     "pack:release": "npm pack --pack-destination release"
   },
-  "files": ["dist/src", "README.md", "CHANGELOG.md", "mcp.example.json"],
+  "files": [
+    "dist/src",
+    "README.md",
+    "CHANGELOG.md",
+    "mcp.example.json"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
     "zod": "^3.25.76"

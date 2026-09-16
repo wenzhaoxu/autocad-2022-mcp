@@ -2,7 +2,7 @@
 
 面向 AutoCAD 2024（R24.3）的本机 MCP 模块。大模型把自然语言意图转换为有类型的 MCP 工具调用，Node.js 服务通过 Windows 命名管道连接 AutoCAD 进程内 .NET 插件，最终由 ObjectARX .NET API 读取或修改 DWG。
 
-当前版本：`0.0.3`。
+当前版本：`0.1.0`。
 
 ## 已实现能力
 
@@ -12,14 +12,16 @@
 | `cad_connect` | 明确绑定一个 AutoCAD PID，避免多实例误路由 |
 | `cad_capabilities` | 返回精确能力矩阵、限制及已验证导出格式 |
 | `cad_status` | 连接、版本、活动图纸和当前图层 |
+| `cad_events` | 按游标读取命令、实体、文档、MCP 操作和屏幕呈现事件 |
 | `cad_document` | 新建、打开、切换、保存、另存、保存副本和关闭 DWG；支持密码保护图纸 |
 | `cad_inspect` | 图纸、实体、图层、块、布局、样式、线型、系统变量 |
-| `cad_draw` | 直线、多段线、圆、圆弧、椭圆、点、文字、块参照和尺寸 |
-| `cad_solid` | 三维长方体、球体、圆柱、圆锥及布尔并集/差集/交集 |
+| `cad_draw` | 二维/三维多段线、样条曲线、构造线、文字、表格、引线、块、填充和完整常用尺寸 |
+| `cad_solid` | 七类三维基元、拉伸、旋转、扫掠及布尔并集/差集/交集 |
 | `cad_model_build` | 用参数化配方批量构建或重建可编辑三维实体，并在失败时补偿回滚 |
 | `cad_measure` | 包围盒、长度、面积、体积、质心及密度换算质量 |
 | `cad_edit` | 属性、移动、复制、旋转、缩放、镜像和删除 |
 | `cad_layer` | 图层创建、修改、改名、删除、当前层、隔离和恢复 |
+| `cad_text_style` | 查询、创建、修改、设为当前或批量应用文字样式；提供中文/CJK 字体支持 |
 | `cad_block` | 块定义、插入和从 DWG 导入 |
 | `cad_layout` | 布局创建、改名、删除、切换和出图设置 |
 | `cad_export` | 已验证 DWG、DXF、选定三维实体的 STL，以及队列式 PDF/DWF/SVG/PNG/JPEG |
@@ -29,7 +31,34 @@
 
 插件还提供 `CADMCPDIFFERENTIAL` 和 `CADMCPDIFFERENTIAL3D` 示例生成命令，分别生成差速器二维装配剖视图及可编辑的三维组件装配模型。
 
-精确修改以 AutoCAD `Handle` 为稳定标识。建议先用 `cad_inspect` 查询，再把返回的 handle 交给 `cad_edit`。`cad_model_build` 接收带参数引用的 box、sphere、cylinder、cone 和 boolean 特征序列，相邻实体自动合并为最多 250 个实体的一次 CAD 事务；重建时传回上次的 `liveHandles`，新模型成功后才清理旧模型。每个 AutoCAD 进程使用独立的 PID 管道；存在多个实例时必须先调用 `cad_instances` 和 `cad_connect`。数据库写入仍在 AutoCAD 主线程串行执行，命名管道可并发接收并排队请求。保存和大型导出的默认超时为 120 秒，并以 AutoCAD 命令结束事件确认结果。
+精确修改以 AutoCAD `Handle` 为稳定标识。建议先用 `cad_inspect` 查询，再把返回的 handle 交给 `cad_edit`。读取结果同时返回 `documentId` 和 `revision`；修改时可传入 `expectedDocumentId`、`expectedRevision`，若用户在 AutoCAD 中已经修改图纸，MCP 会返回冲突而不是覆盖新状态。每个 AutoCAD 进程使用独立的 PID 管道；存在多个实例时必须先调用 `cad_instances` 和 `cad_connect`。数据库写入仍在 AutoCAD 主线程串行执行，事件读取可在长命令运行期间并行完成。
+
+## 实时绘制同步
+
+结构化修改支持三种显示模式：
+
+- `silent`：不主动重生成或改变当前选择集，适合后台批处理。
+- `batch`：默认模式；完成一次 MCP 修改后立即重生成并在 AutoCAD 命令行确认。
+- `step`：`cad_draw` 和三维基元创建会逐实体提交、刷新、高亮并显示步骤进度；中途失败会清理本次已经创建的实体。
+
+示例：
+
+```json
+{
+  "entities": [
+    { "type": "line", "start": [0, 0], "end": [100, 0] },
+    { "type": "circle", "center": [50, 30], "radius": 15 }
+  ],
+  "coordinateSystem": "UCS",
+  "visualMode": "step",
+  "highlightResults": true,
+  "zoomToResult": true,
+  "expectedDocumentId": "2A5F0C1",
+  "expectedRevision": 18
+}
+```
+
+调用 `cad_events` 并把上次返回的 `nextSequence` 作为新的 `afterSequence`，即可增量读取用户手工操作和 MCP 操作。事件缓冲区保存最近 4096 条记录；`overflowed=true` 表示游标过旧，需要重新执行 `cad_status` 和 `cad_inspect` 建立状态基线。
 
 ## 环境
 
@@ -58,7 +87,7 @@ dotnet build .\plugin\AutoCAD2024Mcp\AutoCAD2024Mcp.csproj -c Release
 
 如果已经有编译后的 `plugin\AutoCAD2024Mcp\bin\Release\AutoCAD2024Mcp.dll`，可以跳过插件构建。安装脚本只复制到当前用户的 `%APPDATA%\Autodesk\ApplicationPlugins\AutoCAD2024Mcp.bundle`。
 
-重启 AutoCAD 2024，命令行执行 `CADMCPSTATUS`。显示运行后，重启 Codex 使 MCP 配置生效。也可以把 [mcp.example.json](./mcp.example.json) 的内容合并到支持 JSON MCP 配置的客户端。
+重启 AutoCAD 2024，命令行执行 `CADMCPSTATUS`。显示 0.1.0 后可执行 `CADMCPSELFTEST`；该命令临时创建并清理测试实体，用于验证结构化绘制、三维实体、检查和事件日志。随后重启 Codex 使 MCP 工具目录刷新。也可以把 [mcp.example.json](./mcp.example.json) 的内容合并到支持 JSON MCP 配置的客户端。
 
 ## 验收
 
@@ -77,6 +106,39 @@ node .\scripts\smoke-test.mjs
 
 推荐调用顺序是 `cad_status`、`cad_inspect`、`cad_edit/cad_draw`、再次 `cad_inspect`、`cad_export`。
 
+## 中文文字与字体
+
+MCP 与 AutoCAD 插件之间使用 UTF-8 JSON，`TEXT` 和 `MTEXT` 内容按 Unicode 原样传递。绘制包含中文、日文或韩文的文字且没有指定 `style` 时，插件会自动使用或创建 `MCP_CJK` 样式；也可以通过 `cad_text_style` 明确管理工程字体。
+
+推荐先创建样式，再在 `cad_draw` 中引用：
+
+```json
+{
+  "action": "create",
+  "name": "MCP_CJK",
+  "fontFile": "msyh.ttc",
+  "bigFontFile": "",
+  "xScale": 1
+}
+```
+
+```json
+{
+  "entities": [{
+    "type": "mtext",
+    "position": [0, 0],
+    "text": "车间工艺通风：一号风机运行反馈",
+    "height": 5,
+    "width": 120,
+    "style": "MCP_CJK"
+  }]
+}
+```
+
+修复现有图纸中的问号或方框时，先调用 `cad_inspect`，确认返回的 `text` 字段仍是中文。如果内容仍在，仅需创建中文样式并使用 `cad_text_style` 的 `apply` 操作批量应用到 `TEXT`/`MTEXT`；如果返回内容已经是真实的 `?`，原字符已在更早的非 Unicode 流程中丢失，需要从源文件或备份恢复，字体替换无法还原。
+
+字体文件必须已经安装在运行 AutoCAD 的 Windows 系统中。为保证其他工作站和 PDF 出图一致，项目交付时应统一字体版本；不要依赖接收方不存在的 SHX 大字体。DXF 请通过 `cad_export` 交给 AutoCAD 原生命令生成，避免用非 Unicode 文本工具重写 DXF。
+
 ## 安全边界
 
 - 仅监听本机命名管道，不开放 TCP 端口。
@@ -94,8 +156,8 @@ node .\scripts\smoke-test.mjs
 
 ## 已知边界
 
-- PDF、DWF、SVG 和位图使用 AutoCAD 原生命令队列，返回 `queued=true` 代表已提交给 AutoCAD，不代表文件已经落盘；可在后续检查目标文件。
-- 当前结构化几何覆盖常用二维制图。复杂三维实体、曲面、参数化约束、动态块和行业版对象应通过后续专用工具扩展，不能把本版本描述成全部 AutoCAD API 的完整封装。
+- PDF、DWF、SVG 和位图使用 AutoCAD 原生命令并等待命令结束及目标文件出现；交互式出图配置仍应预先保存在布局中。
+- 当前结构化几何覆盖常用二维制图和实体三维建模。曲面、网格、参数化约束、动态块和行业版对象尚未封装，不能把本版本描述成全部 AutoCAD API 的完整映射。
 - AutoCAD 必须处于运行状态。MCP 服务不会绕过 AutoCAD 授权，也不会在服务器端解析专有 DWG。
 
 ## 开发

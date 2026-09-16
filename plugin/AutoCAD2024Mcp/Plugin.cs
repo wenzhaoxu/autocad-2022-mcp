@@ -1,6 +1,7 @@
 using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
+using Newtonsoft.Json.Linq;
 
 namespace AutoCAD2024Mcp
 {
@@ -14,7 +15,7 @@ namespace AutoCAD2024Mcp
             RunSafely("initialize", () =>
             {
                 EnsureStarted();
-                Write("AutoCAD 2024 MCP bridge 0.0.3 started. Pipe: " + _bridge.PipeName);
+                Write("AutoCAD 2024 MCP bridge 0.1.0 started. Pipe: " + _bridge.PipeName);
             });
         }
 
@@ -29,6 +30,7 @@ namespace AutoCAD2024Mcp
                 }
                 _bridge?.Dispose();
                 _bridge = null;
+                CadEventJournal.Terminate();
             });
         }
 
@@ -46,6 +48,7 @@ namespace AutoCAD2024Mcp
 
         private static void EnsureStarted()
         {
+            CadEventJournal.Initialize();
             if (_bridge == null) _bridge = new PipeBridge();
             _bridge.Start();
             if (_idleHooked) return;
@@ -64,12 +67,70 @@ namespace AutoCAD2024Mcp
                     _idleHooked = false;
                 }
                 _bridge?.Stop();
+                CadEventJournal.Terminate();
                 Write("MCP bridge stopped.");
             });
         }
 
         [CommandMethod("CADMCPSTATUS", CommandFlags.Session)]
-        public void Status() => RunSafely("status", () => Write(_bridge?.IsRunning == true ? "MCP bridge is running. Version 0.0.3." : "MCP bridge is stopped."));
+        public void Status() => RunSafely("status", () => Write(_bridge?.IsRunning == true ? "MCP bridge is running. Version 0.1.0." : "MCP bridge is stopped."));
+
+        [CommandMethod("CADMCPSELFTEST")]
+        public void SelfTest()
+        {
+            RunSafely("self-test", () =>
+            {
+                var document = Application.DocumentManager.MdiActiveDocument;
+                if (document == null) throw new System.InvalidOperationException("No active drawing for self-test.");
+                var handles = new JArray();
+                try
+                {
+                    JToken drawing = CadDispatcher.Dispatch("draw", new JObject
+                    {
+                        ["coordinateSystem"] = "WCS",
+                        ["entities"] = new JArray
+                        {
+                            new JObject { ["type"] = "line", ["start"] = new JArray(0, 0, 0), ["end"] = new JArray(10, 0, 0) },
+                            new JObject { ["type"] = "spline", ["fitPoints"] = new JArray { new JArray(0, 0, 0), new JArray(5, 3, 0), new JArray(10, 0, 0) }, ["degree"] = 2 },
+                            new JObject { ["type"] = "table", ["position"] = new JArray(0, 10, 0), ["rows"] = new JArray { new JArray("Name", "Count"), new JArray("Fan", "2") } }
+                        }
+                    });
+                    foreach (JObject item in drawing["created"] as JArray ?? new JArray()) handles.Add((string)item["handle"]);
+
+                    JToken solid = CadDispatcher.Dispatch("solid", new JObject
+                    {
+                        ["action"] = "create",
+                        ["primitives"] = new JArray
+                        {
+                            new JObject { ["type"] = "torus", ["center"] = new JArray(25, 0, 0), ["majorRadius"] = 5, ["minorRadius"] = 1 }
+                        }
+                    });
+                    foreach (JObject item in solid["created"] as JArray ?? new JArray()) handles.Add((string)item["handle"]);
+
+                    JToken inspected = CadDispatcher.Dispatch("inspect", new JObject { ["scope"] = "entities", ["handles"] = handles });
+                    JObject events = CadEventJournal.Read(new JObject { ["afterSequence"] = 0, ["limit"] = 1000 });
+                    if ((int)inspected["count"] != handles.Count || (int)events["count"] == 0)
+                        throw new System.InvalidOperationException("Structured drawing or event journal verification failed.");
+                    Write("SELFTEST OK: structured drawing, solid creation, inspection, and event journal.");
+                }
+                finally
+                {
+                    if (handles.Count > 0)
+                    {
+                        try
+                        {
+                            CadDispatcher.Dispatch("edit", new JObject
+                            {
+                                ["target"] = new JObject { ["handles"] = handles },
+                                ["operations"] = new JArray { new JObject { ["op"] = "erase" } },
+                                ["allowEmpty"] = true
+                            });
+                        }
+                        catch { }
+                    }
+                }
+            });
+        }
 
         [CommandMethod("CADMCPDIFFERENTIAL")]
         public void CreateDifferential()

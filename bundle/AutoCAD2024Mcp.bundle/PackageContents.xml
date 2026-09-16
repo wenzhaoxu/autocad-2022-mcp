@@ -3,7 +3,7 @@
                     AutodeskProduct="AutoCAD"
                     Name="AutoCAD 2024 MCP Bridge"
                     Description="Local MCP bridge for structured AutoCAD automation"
-                    AppVersion="0.0.3"
+                    AppVersion="0.1.0"
                     ProductCode="{F85F33BA-14C9-4AFE-B120-2420DB6F57B8}"
                     UpgradeCode="{AC7D22D5-6B27-42F1-8A21-A0E61D46E40A}">
   <CompanyDetails Name="Local" />
@@ -11,12 +11,13 @@
     <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.3" SeriesMax="R24.3" />
     <ComponentEntry AppName="AutoCAD2024Mcp"
                     AppType=".Net"
-                    ModuleName="./Contents/Windows/AutoCAD2024Mcp.0.0.3.dll"
+                    ModuleName="./Contents/Windows/AutoCAD2024Mcp.0.1.0.dll"
                     LoadOnAutoCADStartup="True">
       <Commands GroupName="CADMCP">
         <Command Global="CADMCPSTART" Local="CADMCPSTART" />
         <Command Global="CADMCPSTOP" Local="CADMCPSTOP" />
         <Command Global="CADMCPSTATUS" Local="CADMCPSTATUS" />
+        <Command Global="CADMCPSELFTEST" Local="CADMCPSELFTEST" />
         <Command Global="CADMCPDIFFERENTIAL" Local="CADMCPDIFFERENTIAL" />
         <Command Global="CADMCPDIFFERENTIAL3D" Local="CADMCPDIFFERENTIAL3D" />
       </Commands>

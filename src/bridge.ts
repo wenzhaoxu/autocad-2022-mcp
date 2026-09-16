@@ -6,6 +6,7 @@ export interface BridgeRequest {
   id: string;
   method: string;
   params: unknown;
+  timeoutMs: number;
 }
 
 export interface BridgeError {
@@ -19,6 +20,11 @@ export interface BridgeResponse<T = unknown> {
   ok: boolean;
   result?: T;
   error?: BridgeError;
+}
+
+export interface BridgeCallOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export class CadBridgeError extends Error {
@@ -67,27 +73,45 @@ export class CadBridgeClient {
     throw new CadBridgeError("Multiple AutoCAD instances are available. Call cad_connect with the intended processId.", "MULTIPLE_AUTOCAD_INSTANCES", { instances });
   }
 
-  async call<T = unknown>(method: string, params: unknown = {}): Promise<T> {
-    const request: BridgeRequest = { id: randomUUID(), method, params };
+  async call<T = unknown>(
+    method: string,
+    params: unknown = {},
+    options: BridgeCallOptions = {},
+  ): Promise<T> {
+    const signal = options.signal;
+    if (signal?.aborted) {
+      throw new CadBridgeError("AutoCAD bridge request was cancelled", "CANCELLED");
+    }
+
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    const request: BridgeRequest = { id: randomUUID(), method, params, timeoutMs };
     const pipePath = `\\\\.\\pipe\\${this.resolvePipeName()}`;
 
     return await new Promise<T>((resolve, reject) => {
       const socket = net.createConnection(pipePath);
       let settled = false;
       let data = "";
+      let timer: NodeJS.Timeout | undefined;
+      let onAbort: (() => void) | undefined;
 
       const finish = (error?: Error, result?: T) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
         socket.destroy();
         if (error) reject(error);
         else resolve(result as T);
       };
 
-      const timer = setTimeout(() => {
-        finish(new CadBridgeError(`AutoCAD did not respond within ${this.timeoutMs} ms`, "TIMEOUT"));
-      }, this.timeoutMs);
+      onAbort = () => {
+        finish(new CadBridgeError("AutoCAD bridge request was cancelled", "CANCELLED"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      timer = setTimeout(() => {
+        finish(new CadBridgeError(`AutoCAD did not respond within ${timeoutMs} ms`, "TIMEOUT"));
+      }, timeoutMs);
 
       socket.setEncoding("utf8");
       socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));

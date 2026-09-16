@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0 - 2026-09-16
+
+- 新增 `cad_events` 双向变更日志，覆盖文档、命令、实体、MCP 操作和可视化步骤。
+- `cad_status` 与检查结果增加图纸修订号；写工具支持文档及修订冲突保护。
+- 新增 `silent`、`batch`、`step` 三种显示模式，逐实体绘制可在 AutoCAD 中实时刷新、高亮和回滚。
+- 原生撤销、白名单命令、PDF/DWF/SVG/PNG/JPEG 导出等待命令完成，不再提前报告成功。
+- 新增三维多段线、样条曲线、射线、构造线、引线、表格及半径、直径、角度尺寸。
+- 三维能力增加圆环体、楔体、棱锥，以及拉伸、旋转和扫掠实体特征。
+- 修正 UCS/WCS 绘制转换、块属性写入、标注样式和图层线型应用。
+- AutoCAD 插件与 Node MCP 统一升级为 0.1.0，并保持零编译警告。
+- 新增 `CADMCPSELFTEST`，可在不保存图纸的情况下验证核心绘制和同步链路。
+
 ## 0.0.3 - 2026-09-11
 
 ### Added
@@ -12,6 +24,8 @@
 
 ### Improved
 
+- Preserve CJK text end to end over the UTF-8 pipe, honor explicit `TEXT`/`MTEXT` styles, and automatically select a Unicode-capable style for CJK content.
+- Add `cad_text_style` to inspect, create, update, select, and batch-apply AutoCAD text styles so drawings with intact Chinese text can be repaired without re-entering labels.
 - Run document open/new/activate/close in AutoCAD command context instead of switching MDI documents directly from Idle.
 - Support password-protected DWG/DWT input and return `DECRYPTION_FAILED` without exposing the supplied password.
 - Added parameterized model recipes with preflight validation, batched primitive creation, boolean feature tracking, rebuild cleanup, and compensating rollback.

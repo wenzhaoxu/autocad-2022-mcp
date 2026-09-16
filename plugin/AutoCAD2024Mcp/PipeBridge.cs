@@ -98,6 +98,29 @@ namespace AutoCAD2024Mcp
                     return;
                 }
 
+                // The journal is fully synchronized and does not touch AutoCAD objects while reading.
+                // Serve it directly so a client can observe progress while a long CAD command owns
+                // the main-thread execution slot.
+                if (string.Equals((string)request["method"], "events", StringComparison.Ordinal))
+                {
+                    string eventRequestId = (string)request["id"];
+                    try
+                    {
+                        JObject events = CadEventJournal.Read(request["params"] as JObject ?? new JObject());
+                        await writer.WriteLineAsync(new JObject
+                        {
+                            ["id"] = eventRequestId,
+                            ["ok"] = true,
+                            ["result"] = events
+                        }.ToString(Formatting.None)).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        await writer.WriteLineAsync(Error(eventRequestId, "CAD_EXCEPTION", ex.Message, ex.ToString()).ToString(Formatting.None)).ConfigureAwait(false);
+                    }
+                    return;
+                }
+
                 var pending = new PendingRequest { Request = request };
                 _queue.Enqueue(pending);
                 using (token.Register(() => pending.Completion.TrySetCanceled()))
@@ -126,7 +149,7 @@ namespace AutoCAD2024Mcp
                     string id = (string)pending.Request["id"];
                     string method = (string)pending.Request["method"];
                     Task<JToken> task;
-                    try { task = CadDispatcher.DispatchAsync(method, pending.Request["params"] as JObject ?? new JObject()); }
+                    try { task = CadDispatcher.DispatchAsync(method, pending.Request["params"] as JObject ?? new JObject(), id, (int?)pending.Request["timeoutMs"] ?? 120000); }
                     catch (Exception ex) { Complete(pending, id, null, ex); continue; }
                     if (task.IsCompleted) CompleteTask(pending, id, task);
                     else
