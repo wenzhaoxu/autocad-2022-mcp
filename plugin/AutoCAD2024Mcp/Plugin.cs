@@ -15,7 +15,7 @@ namespace AutoCAD2024Mcp
             RunSafely("initialize", () =>
             {
                 EnsureStarted();
-                Write("AutoCAD 2024 MCP bridge 0.1.0 started. Pipe: " + _bridge.PipeName);
+                Write("AutoCAD 2024 MCP bridge 0.1.1 started. Pipe: " + _bridge.PipeName);
             });
         }
 
@@ -73,7 +73,7 @@ namespace AutoCAD2024Mcp
         }
 
         [CommandMethod("CADMCPSTATUS", CommandFlags.Session)]
-        public void Status() => RunSafely("status", () => Write(_bridge?.IsRunning == true ? "MCP bridge is running. Version 0.1.0." : "MCP bridge is stopped."));
+        public void Status() => RunSafely("status", () => Write(_bridge?.IsRunning == true ? "MCP bridge is running. Version 0.1.1." : "MCP bridge is stopped."));
 
         [CommandMethod("CADMCPSELFTEST")]
         public void SelfTest()

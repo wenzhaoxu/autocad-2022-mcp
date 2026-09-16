@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { electricalSheetInputSchema, electricalSymbolInputSchema } from "./electrical.js";
 import { modelRecipeSchema } from "./recipe.js";
 import { workflowInputSchema } from "./workflow.js";
 
@@ -208,6 +209,20 @@ export const toolDefinitions: ToolDefinition[] = [
       coordinateSystem: z.enum(["UCS", "WCS"]).optional(),
       ...mutationControl,
     }, method: "draw",
+  },
+  {
+    name: "cad_electrical_symbol",
+    description: "Insert a standard-aligned electrical schematic symbol from the built-in catalog as editable native AutoCAD entities. Read cad://symbols/electrical/catalog before choosing a symbolId.",
+    schema: electricalSymbolInputSchema.shape,
+    method: "__local_electrical_symbol",
+    destructive: true,
+  },
+  {
+    name: "cad_electrical_sheet",
+    description: "Generate an A0-A4 electrical drawing sheet with paper edge, drawing frame, title block, cosign block, and even zone designations starting at the upper-left opposite the title block.",
+    schema: electricalSheetInputSchema.shape,
+    method: "__local_electrical_sheet",
+    destructive: true,
   },
   {
     name: "cad_edit",

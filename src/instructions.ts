@@ -11,6 +11,7 @@ Required operating sequence:
 7. Use cad_events with a saved sequence cursor when changes made inside AutoCAD must be synchronized back into the conversation.
 8. On ambiguity, missing interlocks, or a document mismatch, stop rather than guessing.
 9. For duty/standby ventilation control drawings, read cad://standards/ventilation-duty-standby before planning.
+10. For electrical drawings, read cad://standards/electrical-drawing-sheet and cad://symbols/electrical/catalog; prefer cad_electrical_sheet and cad_electrical_symbol over hand-building equivalent geometry.
 
 The workflow tool is bounded, idempotency-aware, audited when AUTOCAD_MCP_AUDIT_LOG is set, and automatically requests undo when an applied workflow fails.
 `.trim();

@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AuditLogger, type AuditRecord } from "./audit.js";
 import { CadBridgeClient, CadBridgeError } from "./bridge.js";
+import {
+  drawElectricalSheet,
+  drawElectricalSymbol,
+  ELECTRICAL_DRAWING_SHEET_STANDARD,
+  ELECTRICAL_SYMBOL_CATALOG,
+  ELECTRICAL_SYMBOLS,
+  getElectricalSymbol,
+} from "./electrical.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { buildModelRecipe } from "./recipe.js";
 import { VENTILATION_CONTROL_STANDARD } from "./resources.js";
@@ -46,6 +54,58 @@ server.registerResource(
       },
     ],
   }),
+);
+
+server.registerResource(
+  "electrical-drawing-sheet",
+  "cad://standards/electrical-drawing-sheet",
+  {
+    title: "电气图样幅面、图框与标题栏基线",
+    description: "A0-A4 幅面、图框、标题栏、会签栏、图号和图幅分区规则。",
+    mimeType: "text/markdown",
+  },
+  async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: "text/markdown", text: ELECTRICAL_DRAWING_SHEET_STANDARD }],
+  }),
+);
+
+server.registerResource(
+  "electrical-symbol-catalog",
+  "cad://symbols/electrical/catalog",
+  {
+    title: "电气原理图符号目录",
+    description: "可由 cad_electrical_symbol 插入的标准对齐电气图形符号目录。",
+    mimeType: "application/json",
+  },
+  async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(ELECTRICAL_SYMBOL_CATALOG, null, 2) }],
+  }),
+);
+
+server.registerResource(
+  "electrical-symbol",
+  new ResourceTemplate("cad://symbols/electrical/{symbolId}", {
+    list: async () => ({
+      resources: ELECTRICAL_SYMBOLS.map((symbol) => ({
+        name: symbol.nameZh,
+        title: `${symbol.nameZh} / ${symbol.nameEn}`,
+        description: symbol.description,
+        uri: `cad://symbols/electrical/${symbol.id}`,
+        mimeType: "application/json",
+      })),
+    }),
+    complete: { symbolId: (value) => ELECTRICAL_SYMBOLS.map((symbol) => symbol.id).filter((id) => id.startsWith(value)) },
+  }),
+  {
+    title: "单个电气图形符号",
+    description: "返回指定 symbolId 的规范化、可编辑二维几何。",
+    mimeType: "application/json",
+  },
+  async (uri, variables) => {
+    const symbol = getElectricalSymbol(String(variables.symbolId));
+    if (!symbol) throw new Error(`Unknown electrical symbol: ${String(variables.symbolId)}`);
+    return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(symbol, null, 2) }] };
+  },
 );
 
 for (const tool of toolDefinitions) {
@@ -110,8 +170,13 @@ for (const tool of toolDefinitions) {
                     "rotatedDimension", "radialDimension", "diametricDimension",
                     "angularDimension2Line",
                   ],
-                  solidPrimitives: ["box", "sphere", "cylinder", "cone", "torus", "wedge", "pyramid"],
-                  resources: ["cad://standards/ventilation-duty-standby"],
+                   solidPrimitives: ["box", "sphere", "cylinder", "cone", "torus", "wedge", "pyramid"],
+                  resources: [
+                    "cad://standards/ventilation-duty-standby",
+                    "cad://standards/electrical-drawing-sheet",
+                    "cad://symbols/electrical/catalog",
+                    "cad://symbols/electrical/{symbolId}",
+                  ],
                 }
               : tool.method === "__local_connect"
                 ? {
@@ -121,6 +186,10 @@ for (const tool of toolDefinitions) {
                   }
                 : tool.method === "__local_model_build"
                   ? await buildModelRecipe(bridge, args)
+                  : tool.method === "__local_electrical_symbol"
+                    ? await drawElectricalSymbol(bridge, args, extra.signal)
+                    : tool.method === "__local_electrical_sheet"
+                      ? await drawElectricalSheet(bridge, args, extra.signal)
                   : tool.method === "__local_workflow"
                     ? await workflow.execute(args, extra.signal)
                     : await bridge.call(tool.method, args, { signal: extra.signal });

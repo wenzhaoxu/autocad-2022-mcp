@@ -2,7 +2,7 @@
 
 面向 AutoCAD 2024（R24.3）的本机 MCP 模块。大模型把自然语言意图转换为有类型的 MCP 工具调用，Node.js 服务通过 Windows 命名管道连接 AutoCAD 进程内 .NET 插件，最终由 ObjectARX .NET API 读取或修改 DWG。
 
-当前版本：`0.1.0`。
+当前版本：`0.1.1`。
 
 ## 已实现能力
 
@@ -16,6 +16,8 @@
 | `cad_document` | 新建、打开、切换、保存、另存、保存副本和关闭 DWG；支持密码保护图纸 |
 | `cad_inspect` | 图纸、实体、图层、块、布局、样式、线型、系统变量 |
 | `cad_draw` | 二维/三维多段线、样条曲线、构造线、文字、表格、引线、块、填充和完整常用尺寸 |
+| `cad_electrical_symbol` | 从内置电气符号目录插入可编辑的原生二维实体，支持缩放、旋转、标注和逐步显示 |
+| `cad_electrical_sheet` | 生成 A0-A4 外框、图框、标题栏、会签栏和偶数图幅分区 |
 | `cad_solid` | 七类三维基元、拉伸、旋转、扫掠及布尔并集/差集/交集 |
 | `cad_model_build` | 用参数化配方批量构建或重建可编辑三维实体，并在失败时补偿回滚 |
 | `cad_measure` | 包围盒、长度、面积、体积、质心及密度换算质量 |
@@ -87,7 +89,7 @@ dotnet build .\plugin\AutoCAD2024Mcp\AutoCAD2024Mcp.csproj -c Release
 
 如果已经有编译后的 `plugin\AutoCAD2024Mcp\bin\Release\AutoCAD2024Mcp.dll`，可以跳过插件构建。安装脚本只复制到当前用户的 `%APPDATA%\Autodesk\ApplicationPlugins\AutoCAD2024Mcp.bundle`。
 
-重启 AutoCAD 2024，命令行执行 `CADMCPSTATUS`。显示 0.1.0 后可执行 `CADMCPSELFTEST`；该命令临时创建并清理测试实体，用于验证结构化绘制、三维实体、检查和事件日志。随后重启 Codex 使 MCP 工具目录刷新。也可以把 [mcp.example.json](./mcp.example.json) 的内容合并到支持 JSON MCP 配置的客户端。
+重启 AutoCAD 2024，命令行执行 `CADMCPSTATUS`。显示 0.1.1 后可执行 `CADMCPSELFTEST`；该命令临时创建并清理测试实体，用于验证结构化绘制、三维实体、检查和事件日志。随后重启 Codex 使 MCP 工具目录刷新。也可以把 [mcp.example.json](./mcp.example.json) 的内容合并到支持 JSON MCP 配置的客户端。
 
 ## 验收
 
@@ -139,12 +141,24 @@ MCP 与 AutoCAD 插件之间使用 UTF-8 JSON，`TEXT` 和 `MTEXT` 内容按 Uni
 
 字体文件必须已经安装在运行 AutoCAD 的 Windows 系统中。为保证其他工作站和 PDF 出图一致，项目交付时应统一字体版本；不要依赖接收方不存在的 SHX 大字体。DXF 请通过 `cad_export` 交给 AutoCAD 原生命令生成，避免用非 Unicode 文本工具重写 DXF。
 
+## 电气制图资源
+
+MCP 发布下列内置资源：
+
+- `cad://standards/electrical-drawing-sheet`：A0-A4 幅面、图框、标题栏、会签栏、图号和图幅分区基线。
+- `cad://symbols/electrical/catalog`：全部可调用电气符号的目录、类别、别名和端子信息。
+- `cad://symbols/electrical/{symbolId}`：单个符号的规范化二维几何资源。
+
+`cad_electrical_symbol` 将目录中的电阻、电容、电感、变压器、电源、接地、开关、按钮、保护、继电器、信号、仪表、电机、半导体和连接类符号展开为原生 `LINE`、`POLYLINE`、`CIRCLE`、`ARC`、`TEXT`，后续仍可通过 `cad_edit` 修改。符号语义按常用 IEC 60617 / GB/T 4728 表达方式对齐；正式出图前仍需按项目采用的标准版本复核。
+
+`cad_electrical_sheet` 默认 A0-A3 为横向、A4 为纵向；装订边为左侧 25 mm，A0-A2 其他边距为 10 mm，A3-A4 为 5 mm。A3/A4 可通过 `extensionModules` 按短边模数增加长边。边距、方向、分区数量、图签字段、会签人员、图层和中文文字样式均可覆盖。横向数字与纵向大写字母从标题栏对角的左上角开始，横纵分区数仅接受偶数。
+
 ## 安全边界
 
 - 仅监听本机命名管道，不开放 TCP 端口。
 - 文件路径必须为绝对本机路径。
 - 结构化修改使用事务；失败自动回滚。
-- 保存通过异步原生 `QSAVE`/`SAVEAS` 执行，禁止从 Idle 回调直接调用 `AcDbDatabase.saveAs`。
+- 保存通过异步原生 `QSAVE`/`SAVEAS` 执行；另存为期间临时禁用 `FILEDIA`，并在完成、失败或取消后恢复原设置；禁止从 Idle 回调直接调用 `AcDbDatabase.saveAs`。
 - 新建、打开、激活及关闭图纸通过 AutoCAD 命令上下文执行，避免在 Idle 回调中切换 MDI 文档导致挂起。
 - `saveCopy` 和 DWG 导出使用异步原生 `-WBLOCK`，不改变活动图纸的文件名。
 - 插件 DLL 使用版本化文件名部署，不覆盖 AutoCAD 已加载的程序集。

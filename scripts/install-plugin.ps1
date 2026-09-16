@@ -17,22 +17,22 @@ if (-not (Test-Path -LiteralPath $sourceDll)) {
 }
 
 $manifestText = Get-Content -LiteralPath $manifest -Raw
-if ($manifestText -notmatch 'AppVersion="0\.1\.0"' -or $manifestText -notmatch 'AutoCAD2024Mcp\.0\.1\.0\.dll') {
-    throw "Refusing to install: bundle manifest is not MCP 0.1.0."
+if ($manifestText -notmatch 'AppVersion="0\.1\.1"' -or $manifestText -notmatch 'AutoCAD2024Mcp\.0\.1\.1\.dll') {
+    throw "Refusing to install: bundle manifest is not MCP 0.1.1."
 }
 $assemblyVersion = [System.Reflection.AssemblyName]::GetAssemblyName($sourceDll).Version
-if ($assemblyVersion -ne [Version]"0.1.0.0") {
-    throw "Refusing to install assembly version $assemblyVersion; expected 0.1.0.0."
+if ($assemblyVersion -ne [Version]"0.1.1.0") {
+    throw "Refusing to install assembly version $assemblyVersion; expected 0.1.1.0."
 }
 
 New-Item -ItemType Directory -Force -Path $contentsRoot | Out-Null
 Copy-Item -LiteralPath $manifest -Destination (Join-Path $bundleRoot "PackageContents.xml") -Force
-Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.0.dll") -Force
+Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.1.dll") -Force
 
-$installedDll = Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.0.dll"
+$installedDll = Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.1.dll"
 if ((Get-FileHash -LiteralPath $sourceDll).Hash -ne (Get-FileHash -LiteralPath $installedDll).Hash) {
     throw "Installed plugin hash does not match the release binary."
 }
 
-Write-Output "Installed AutoCAD MCP 0.1.0: $bundleRoot"
+Write-Output "Installed AutoCAD MCP 0.1.1: $bundleRoot"
 Write-Output "Restart AutoCAD 2024, then run CADMCPSTATUS."

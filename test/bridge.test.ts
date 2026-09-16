@@ -106,6 +106,15 @@ describe("tool catalog", () => {
     expect(events).toBeDefined();
     expect(z.object(events!.schema).safeParse({ afterSequence: 12, limit: 100, types: ["entity.modified"] }).success).toBe(true);
 
+    const electricalSymbol = toolDefinitions.find((tool) => tool.name === "cad_electrical_symbol");
+    expect(electricalSymbol).toBeDefined();
+    expect(z.object(electricalSymbol!.schema).safeParse({ symbolId: "motor-3phase", insertionPoint: [100, 50], tag: "M1" }).success).toBe(true);
+
+    const electricalSheet = toolDefinitions.find((tool) => tool.name === "cad_electrical_sheet");
+    expect(electricalSheet).toBeDefined();
+    expect(z.object(electricalSheet!.schema).safeParse({ sheet: "A3", zoneColumns: 8, zoneRows: 6 }).success).toBe(true);
+    expect(z.object(electricalSheet!.schema).safeParse({ sheet: "A3", zoneColumns: 7 }).success).toBe(false);
+
     expect(draw!.schema.entities.safeParse([
       { type: "spline", fitPoints: [[0, 0], [10, 5], [20, 0]], degree: 2 },
       { type: "table", position: [0, 0], rows: [["名称", "数量"], ["风机", "2"]] },

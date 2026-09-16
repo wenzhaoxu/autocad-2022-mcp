@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.1 - 2026-09-16
+
+- 修复 `cad_document saveAs` 在 `FILEDIA=1` 时打开交互式文件窗口；保存完成、失败或取消后恢复原设置。
+- `cad_document save` 在未命名图纸上返回 `UNTITLED_DOCUMENT`，避免 `QSAVE` 打开保存窗口。
+- 新增电气图形符号目录、单符号 MCP 资源及 `cad_electrical_symbol`，可将常用标准对齐符号插入为可编辑原生实体。
+- 新增电气图样幅面标准资源及 `cad_electrical_sheet`，生成 A0-A4 外框、图框、标题栏、会签栏和偶数图幅分区。
+
 ## 0.1.0 - 2026-09-16
 
 - 新增 `cad_events` 双向变更日志，覆盖文档、命令、实体、MCP 操作和可视化步骤。

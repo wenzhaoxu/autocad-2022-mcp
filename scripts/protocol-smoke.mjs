@@ -18,6 +18,18 @@ try {
   assert(names.includes("cad_export"), "cad_export is missing from the MCP catalog");
   assert(names.includes("cad_text_style"), "cad_text_style is missing from the MCP catalog");
   assert(names.includes("cad_events"), "cad_events is missing from the MCP catalog");
+  assert(names.includes("cad_electrical_symbol"), "cad_electrical_symbol is missing from the MCP catalog");
+  assert(names.includes("cad_electrical_sheet"), "cad_electrical_sheet is missing from the MCP catalog");
+
+  const resources = await client.listResources();
+  const resourceUris = resources.resources.map((resource) => resource.uri);
+  assert(resourceUris.includes("cad://standards/electrical-drawing-sheet"));
+  assert(resourceUris.includes("cad://symbols/electrical/catalog"));
+  assert(resourceUris.includes("cad://symbols/electrical/motor-3phase"));
+  const sheetStandard = await client.readResource({ uri: "cad://standards/electrical-drawing-sheet" });
+  assert(sheetStandard.contents.some((content) => content.text?.includes("A0")));
+  const symbol = await client.readResource({ uri: "cad://symbols/electrical/motor-3phase" });
+  assert(symbol.contents.some((content) => content.text?.includes("三相电动机")));
 
   const response = await client.callTool({ name: "cad_capabilities", arguments: {} });
   assert.equal(response.isError, undefined);

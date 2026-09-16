@@ -82,6 +82,18 @@ namespace AutoCAD2024Mcp
         private static bool IsNativeDocumentSave(string method, JObject p) =>
             method == "document" && ((string)p["action"] == "save" || (string)p["action"] == "saveAs");
 
+        private static bool IsUntitledDocument(Document doc)
+        {
+            try
+            {
+                return Convert.ToInt32(AcApp.GetSystemVariable("DWGTITLED"), CultureInfo.InvariantCulture) == 0;
+            }
+            catch
+            {
+                return string.IsNullOrWhiteSpace(doc.Database.Filename);
+            }
+        }
+
         private static Task<JToken> QueueNativeDocumentSaveAsync(JObject p)
         {
             Document doc = AcApp.DocumentManager.MdiActiveDocument;
@@ -92,7 +104,7 @@ namespace AutoCAD2024Mcp
             string commandText;
             if (action == "save")
             {
-                if (string.IsNullOrWhiteSpace(doc.Database.Filename)) throw new CadMcpException("UNTITLED_DOCUMENT", "Use saveAs for an untitled drawing.");
+                if (IsUntitledDocument(doc)) throw new CadMcpException("UNTITLED_DOCUMENT", "Use saveAs for an untitled drawing.");
                 commandName = "QSAVE";
                 commandText = "_.QSAVE\r";
             }
@@ -110,37 +122,54 @@ namespace AutoCAD2024Mcp
                 commandText = "_.SAVEAS\r" + SaveCommandVersion((string)p["version"]) + "\r\"" + path.Replace("\"", "") + "\"\r";
             }
 
+            object originalFileDia = null;
+            bool restoreFileDia = false;
+            if (action == "saveAs")
+            {
+                originalFileDia = AcApp.GetSystemVariable("FILEDIA");
+                AcApp.SetSystemVariable("FILEDIA", 0);
+                restoreFileDia = true;
+            }
+
             var completion = NewCompletion();
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
+            Action restoreDialogs = () =>
+            {
+                if (!restoreFileDia) return;
+                restoreFileDia = false;
+                try { AcApp.SetSystemVariable("FILEDIA", originalFileDia); } catch { }
+            };
             Action detach = () =>
             {
                 doc.CommandEnded -= ended;
                 doc.CommandFailed -= failed;
                 doc.CommandCancelled -= cancelled;
+                restoreDialogs();
             };
             ended = (sender, args) =>
             {
-                if (!string.Equals(args.GlobalCommandName, commandName, StringComparison.OrdinalIgnoreCase)) return;
+                if (!CommandNamesMatch(args.GlobalCommandName, commandName)) return;
                 detach();
                 if (action == "saveAs" && !File.Exists(path)) completion.TrySetException(new CadMcpException("SAVE_FAILED", "AutoCAD completed SAVEAS without creating: " + path));
                 else completion.TrySetResult(DocumentResult(doc));
             };
             failed = (sender, args) =>
             {
-                if (!string.Equals(args.GlobalCommandName, commandName, StringComparison.OrdinalIgnoreCase)) return;
+                if (!CommandNamesMatch(args.GlobalCommandName, commandName)) return;
                 detach(); completion.TrySetException(new CadMcpException("SAVE_FAILED", "AutoCAD " + commandName + " command failed."));
             };
             cancelled = (sender, args) =>
             {
-                if (!string.Equals(args.GlobalCommandName, commandName, StringComparison.OrdinalIgnoreCase)) return;
+                if (!CommandNamesMatch(args.GlobalCommandName, commandName)) return;
                 detach(); completion.TrySetException(new CadMcpException("CANCELLED", "AutoCAD " + commandName + " command was cancelled."));
             };
             doc.CommandEnded += ended;
             doc.CommandFailed += failed;
             doc.CommandCancelled += cancelled;
-            doc.SendStringToExecute(commandText, true, false, false);
+            try { doc.SendStringToExecute(commandText, true, false, false); }
+            catch { detach(); throw; }
             return completion.Task;
         }
 
@@ -612,7 +641,7 @@ namespace AutoCAD2024Mcp
             return new JObject
             {
                 ["connected"] = true,
-                ["mcpVersion"] = "0.1.0",
+                ["mcpVersion"] = "0.1.1",
                 ["health"] = "normal",
                 ["warnings"] = warnings,
                 ["trustedDeployment"] = trustedDeployment,
@@ -713,7 +742,7 @@ namespace AutoCAD2024Mcp
                 if ((bool?)p["discardChanges"] == true) current.CloseAndDiscard();
                 else
                 {
-                    if (string.IsNullOrWhiteSpace(current.Database.Filename)) throw new CadMcpException("UNTITLED_DOCUMENT", "Use saveAs before closing an untitled drawing.");
+                    if (IsUntitledDocument(current)) throw new CadMcpException("UNTITLED_DOCUMENT", "Use saveAs before closing an untitled drawing.");
                     current.CloseAndSave(current.Database.Filename);
                 }
                 return new JObject { ["closed"] = name };

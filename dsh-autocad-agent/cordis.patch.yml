@@ -1,0 +1,27 @@
+- id: system-prompt
+  config:
+    personaPrefix: >-
+      你是面向 AutoCAD 2024 的工程制图智能体。先读取、再规划、后修改，并在提交前验证。
+    personaSuffix: >-
+      工作目录是 {{cwd}}。普通通风与消防排烟必须明确区分；安全回路不得仅由软件替代。
+- insert:
+    - id: mcp-autocad-2024
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: autocad_2024
+        transport: stdio
+        command: node
+        args: !!js >-
+          [process.env.AUTOCAD_MCP_ENTRY ??
+           process.getBuiltinModule('node:path').resolve(process.cwd(), 'dist/src/index.js')]
+        cwd: !!js process.env.AUTOCAD_MCP_ROOT ?? process.cwd()
+        env:
+          AUTOCAD_MCP_TIMEOUT_MS: !!js process.env.AUTOCAD_MCP_TIMEOUT_MS ?? '120000'
+          AUTOCAD_MCP_AUDIT_LOG: !!js process.env.AUTOCAD_MCP_AUDIT_LOG ?? process.getBuiltinModule('node:path').resolve(process.cwd(), 'output', 'autocad-mcp-audit.jsonl')
+        toolCallTimeoutMs: 180000
+        failOnStartupError: true
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
