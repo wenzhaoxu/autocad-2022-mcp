@@ -6,6 +6,7 @@ using System.Linq;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.Colors;
@@ -283,7 +284,7 @@ namespace AutoCAD2024Mcp
             if (method == "document")
             {
                 string action = (string)p["action"];
-                return action == "close";
+                return action == "new" || action == "open" || action == "close" || action == "activate";
             }
             return false;
         }
@@ -369,7 +370,33 @@ namespace AutoCAD2024Mcp
             if (action == "open")
             {
                 string path = AbsolutePath(p, "path", true);
-                Document d = docs.Open(path, (bool?)p["readOnly"] ?? false);
+                bool readOnly = (bool?)p["readOnly"] ?? false;
+                string password = (string)p["password"];
+                if (!string.IsNullOrEmpty(password) && string.Equals(Path.GetExtension(path), ".dxf", StringComparison.OrdinalIgnoreCase))
+                    throw new CadMcpException("INVALID_ARGUMENT", "password is only valid when opening DWG or DWT files.");
+                Document d;
+                try
+                {
+                    d = string.IsNullOrEmpty(password) ? docs.Open(path, readOnly) : docs.Open(path, readOnly, password);
+                }
+                catch (COMException ex) when (IsDecryptionFailure(ex))
+                {
+                    throw new CadMcpException(
+                        "DECRYPTION_FAILED",
+                        string.IsNullOrEmpty(password)
+                            ? "AutoCAD could not decrypt the drawing. If it is password-protected, provide password; otherwise use AutoCAD RECOVER to validate the file."
+                            : "AutoCAD could not decrypt the drawing with the supplied password.",
+                        new { path, hresult = "0x" + ex.ErrorCode.ToString("X8", CultureInfo.InvariantCulture) });
+                }
+                catch (Autodesk.AutoCAD.Runtime.Exception ex) when (ex.ErrorStatus == ErrorStatus.SecErrorDecryptingData)
+                {
+                    throw new CadMcpException(
+                        "DECRYPTION_FAILED",
+                        string.IsNullOrEmpty(password)
+                            ? "AutoCAD could not decrypt the drawing. If it is password-protected, provide password; otherwise use AutoCAD RECOVER to validate the file."
+                            : "AutoCAD could not decrypt the drawing with the supplied password.",
+                        new { path, errorStatus = ex.ErrorStatus.ToString() });
+                }
                 docs.MdiActiveDocument = d;
                 return DocumentResult(d);
             }
@@ -843,6 +870,10 @@ namespace AutoCAD2024Mcp
         private static JArray PointJson(Point3d p) => new JArray(p.X, p.Y, p.Z);
         private static JObject ExtentsJson(Extents3d e) => new JObject { ["min"] = PointJson(e.MinPoint), ["max"] = PointJson(e.MaxPoint) };
         private static DwgVersion DwgVersionOf(string value) { switch (value) { case "2013": return DwgVersion.AC1027; case "2010": return DwgVersion.AC1024; case "2007": return DwgVersion.AC1021; case "2004": return DwgVersion.AC1800; case "2000": return DwgVersion.AC1015; default: return DwgVersion.AC1032; } }
+        private static bool IsDecryptionFailure(COMException exception) =>
+            exception.ErrorCode == unchecked((int)0x80200157) ||
+            exception.Message.IndexOf("decrypt", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            exception.Message.IndexOf("解密", StringComparison.OrdinalIgnoreCase) >= 0;
         private static TaskCompletionSource<JToken> NewCompletion() => new TaskCompletionSource<JToken>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

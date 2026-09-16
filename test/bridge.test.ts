@@ -49,5 +49,8 @@ describe("tool catalog", () => {
     expect(draw!.schema.entities.safeParse([{ type: "line", start: [0, 0], end: [10, 10] }]).success).toBe(true);
     const solid = toolDefinitions.find((tool) => tool.name === "cad_solid");
     expect(solid!.schema.primitives.safeParse([{ type: "box", origin: [0, 0, 0], length: 10, width: 8, height: 6 }]).success).toBe(true);
+    const document = toolDefinitions.find((tool) => tool.name === "cad_document");
+    expect(document!.schema.password.safeParse("drawing-password").success).toBe(true);
+    expect(document!.schema.password.safeParse("").success).toBe(false);
   });
 });

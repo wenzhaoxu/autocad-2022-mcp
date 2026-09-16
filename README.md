@@ -12,7 +12,7 @@
 | `cad_connect` | 明确绑定一个 AutoCAD PID，避免多实例误路由 |
 | `cad_capabilities` | 返回精确能力矩阵、限制及已验证导出格式 |
 | `cad_status` | 连接、版本、活动图纸和当前图层 |
-| `cad_document` | 新建、打开、切换、保存、另存、保存副本和关闭 DWG |
+| `cad_document` | 新建、打开、切换、保存、另存、保存副本和关闭 DWG；支持密码保护图纸 |
 | `cad_inspect` | 图纸、实体、图层、块、布局、样式、线型、系统变量 |
 | `cad_draw` | 直线、多段线、圆、圆弧、椭圆、点、文字、块参照和尺寸 |
 | `cad_solid` | 三维长方体、球体、圆柱、圆锥及布尔并集/差集/交集 |
@@ -83,6 +83,7 @@ node .\scripts\smoke-test.mjs
 - 文件路径必须为绝对本机路径。
 - 结构化修改使用事务；失败自动回滚。
 - 保存通过异步原生 `QSAVE`/`SAVEAS` 执行，禁止从 Idle 回调直接调用 `AcDbDatabase.saveAs`。
+- 新建、打开、激活及关闭图纸通过 AutoCAD 命令上下文执行，避免在 Idle 回调中切换 MDI 文档导致挂起。
 - `saveCopy` 和 DWG 导出使用异步原生 `-WBLOCK`，不改变活动图纸的文件名。
 - 插件 DLL 使用版本化文件名部署，不覆盖 AutoCAD 已加载的程序集。
 - 正式 DLL 仅通过 `%APPDATA%\Autodesk\ApplicationPlugins` Bundle 自动加载；不要手动 `NETLOAD` 仓库 `plugin` 目录中的开发 DLL。

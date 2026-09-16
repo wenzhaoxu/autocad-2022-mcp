@@ -92,6 +92,7 @@ export const toolDefinitions: ToolDefinition[] = [
       action: z.enum(["list", "new", "open", "save", "saveAs", "saveCopy", "close", "activate"]),
       path: z.string().optional(), template: z.string().optional(), documentId: z.string().optional(),
       readOnly: z.boolean().optional(), discardChanges: z.boolean().optional(), overwrite: z.boolean().optional(),
+      password: z.string().min(1).optional().describe("Password for an encrypted DWG or DWT; never returned in tool output"),
       version: z.enum(["2018", "2013", "2010", "2007", "2004", "2000"]).optional(),
     }, method: "document",
   },

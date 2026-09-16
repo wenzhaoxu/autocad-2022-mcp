@@ -12,6 +12,8 @@
 
 ### Improved
 
+- Run document open/new/activate/close in AutoCAD command context instead of switching MDI documents directly from Idle.
+- Support password-protected DWG/DWT input and return `DECRYPTION_FAILED` without exposing the supplied password.
 - Added parameterized model recipes with preflight validation, batched primitive creation, boolean feature tracking, rebuild cleanup, and compensating rollback.
 - Reduced a 500-primitive recipe from 500 named-pipe round trips to 2 bounded CAD transactions.
 - Throttled instance-registration heartbeats to eliminate continuous disk writes from AutoCAD Idle events.
