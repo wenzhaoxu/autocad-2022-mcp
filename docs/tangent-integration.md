@@ -11,16 +11,38 @@
 ## 一、可直接使用的自动化流程（已验证）
 
 ```jsonc
-// 1) 从「种子图库」把天正符号块定义导入当前图纸（只需该图库存在同名块）
+// 1) 从「种子图库」或「离线提取出的符号 DWG」导入块定义
 { "action": "import", "name": "$element$00000576",
   "sourcePath": "C:\\Users\\wenzh\\tools\\tangent-symbols\\tangent-electrical-symbols.dwg" }
 
-// 2) 插入（任意位置 / 数量 / 旋转 / 比例）
+// 2) 插入：★ scale 必须用天正的比例，不是 1 ★
 { "action": "insert", "name": "$element$00000576",
-  "insertionPoint": [10000, 5000, 0], "rotation": 1.5707963, "scale": [2, 2, 1] }
+  "insertionPoint": [10000, 5000, 0], "rotation": 0,
+  "scale": [1500, 1500, 1] }
 
 // 3) 修正图层到天正约定的 ELEMENT（cad_block 的 insert 不接收图层参数）
 //    cad_edit { target: { handles: ["308"] }, operations: [{ op: "setProperties", layer: "ELEMENT" }] }
+```
+
+### 比例（关键，容易错）
+
+天正插入元件时**带图纸比例**，直接用 `scale=1` 会得到肉眼可见的"小了几百倍"的符号。
+
+| 项目 | 结论 |
+|---|---|
+| 实测比例 | 本图纸（出图比例 1:100）为 **1500**（`$element$*` 与 `$equip$*` 的 INSERT scale 因子均为 1500） |
+| 关系式 | **插入比例 = 15 × DIMSCALE**（`DIMSCALE = 100` → 1500） |
+| 最可靠的取值方式 | 读图中任一已有天正元件 INSERT 的 scale 因子（`cad_inspect scope=entities` 返回 `scale`） |
+| 校验 | 提取出的 `element/00000277.dwg`（接地）原始几何 0.5 × 0.625，×1500 = **750 × 937.5**，与天正手工插入实例的实测包围盒**完全一致** |
+
+### 基点
+
+天正把符号的插入基点写进了 DWG 的 **`INSBASE`**（实测 `element/00000840.dwg` 的
+`INSBASE=(8398.84, 10790.24)`，落在几何包围盒内）。`cad_block import` 会把源 DWG 的
+INSBASE 当作块基点，因此**插入点与几何落点一致**，无需额外平移：
+
+```
+在 (20000,10000) 插入 → 实测包围盒 (19625.0, 8500.0)–(20070.7, 10000.0)
 ```
 
 实测记录（全新图纸、无任何天正 UI 操作）：
@@ -30,6 +52,20 @@
 | `cad_block import` `$element$00000576`（断路器） | 块表新增 `$element$00000576` |
 | 3 次 `cad_block insert` | handle `308`/`309`/`30A`，含旋转 90° 与放大 2 倍 |
 | `cad_edit setProperties layer=ELEMENT` | 3 个均落到 `ELEMENT` |
+
+### 用离线提取的图库（推荐）
+
+若已用 `tools/tangent-dwb-extract` 提取出 `element/00000840.dwg` 等文件，则**不再需要天正**：
+源 DWG 内无命名块，`cad_block import` 会把整图作为一个块导入（块名由 `name` 指定），
+基点来自 INSBASE，比例按上表取 1500。
+
+```jsonc
+{ "action":"import", "name":"TANGENT_断路器_840",
+  "sourcePath":"...\\tangent-lib-extract\\element\\00000840.dwg" }
+{ "action":"insert", "name":"TANGENT_断路器_840",
+  "insertionPoint":[20000, 10000, 0], "scale":[1500, 1500, 1] }
+```
+
 
 ### 种子图库
 
