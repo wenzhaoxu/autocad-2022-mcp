@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 天正电气图库（ArchStar）格式逆向 + 离线提取器
+
+- 新增 `docs/tangent-dwb-format.md`：完整逆向报告——`.DWB/.SLB/.TK/.TKW` 文件族职责、
+  模块/导出符号调用链、`ArchStar DWG  Library 1.0` 容器布局、`AS LZW` 编解码参数
+  （LSB 优先 / 9 位起 / `256` 为字典重置 / **`257` 是字面量而非 EOI** / 字典上限 4000 /
+  位流起点 `块内 +0x28`）、名词索引方法与踩坑记录。
+- 新增 `tools/tangent-dwb-extract/`：无第三方依赖的离线提取器。
+  实测在本机天正 T20 V9 上解出 **2380 个符号 DWG**（各库成功率 76%~100%），
+  提取文件可在 AutoCAD 2022 直接打开（`AC1015`，含 `LWPOLYLINE` 与 `ATTDEF`），
+  并提供按名称检索的 `index-by-name.txt`。
+- 该成果使"复用天正符号库"不再依赖天正界面入库：把提取出的 DWG 交给 `cad_block import`
+  即可在任意图纸中自动插入（见 `docs/tangent-integration.md`）。
+
 ### 可配置的命令白名单（支持第三方命令）
 
 - `cad_command` 的白名单现在可由运行时配置扩充：插件程序集同目录的 `allowed-commands.txt`，
