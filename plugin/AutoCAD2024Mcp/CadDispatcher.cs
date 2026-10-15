@@ -240,6 +240,12 @@ namespace AutoCAD2024Mcp
             }
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             var completion = NewCompletion();
+            // FILEDIA=1 时该命令会弹出文件对话框并阻塞命令队列（天正等接管了原生命令的环境下必现）。
+            // 与 saveAs 一致：命令执行期间强制 FILEDIA=0，结束/失败/取消后恢复。
+            object originalFileDia = null;
+            bool restoreFileDia = false;
+            try { originalFileDia = AcApp.GetSystemVariable("FILEDIA"); AcApp.SetSystemVariable("FILEDIA", 0); restoreFileDia = true; }
+            catch { restoreFileDia = false; }
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -248,6 +254,7 @@ namespace AutoCAD2024Mcp
                 doc.CommandEnded -= ended;
                 doc.CommandFailed -= failed;
                 doc.CommandCancelled -= cancelled;
+                if (restoreFileDia) { restoreFileDia = false; try { AcApp.SetSystemVariable("FILEDIA", originalFileDia); } catch { } }
             };
             ended = (sender, args) =>
             {
@@ -295,6 +302,12 @@ namespace AutoCAD2024Mcp
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             doc.Editor.SetImpliedSelection(ids.ToArray());
             var completion = NewCompletion();
+            // FILEDIA=1 时该命令会弹出文件对话框并阻塞命令队列（天正等接管了原生命令的环境下必现）。
+            // 与 saveAs 一致：命令执行期间强制 FILEDIA=0，结束/失败/取消后恢复。
+            object originalFileDia = null;
+            bool restoreFileDia = false;
+            try { originalFileDia = AcApp.GetSystemVariable("FILEDIA"); AcApp.SetSystemVariable("FILEDIA", 0); restoreFileDia = true; }
+            catch { restoreFileDia = false; }
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -303,6 +316,7 @@ namespace AutoCAD2024Mcp
                 doc.CommandEnded -= ended;
                 doc.CommandFailed -= failed;
                 doc.CommandCancelled -= cancelled;
+                if (restoreFileDia) { restoreFileDia = false; try { AcApp.SetSystemVariable("FILEDIA", originalFileDia); } catch { } }
             };
             ended = (sender, args) =>
             {
@@ -342,6 +356,12 @@ namespace AutoCAD2024Mcp
             Directory.CreateDirectory(Path.GetDirectoryName(path));
 
             var completion = NewCompletion();
+            // FILEDIA=1 时该命令会弹出文件对话框并阻塞命令队列（天正等接管了原生命令的环境下必现）。
+            // 与 saveAs 一致：命令执行期间强制 FILEDIA=0，结束/失败/取消后恢复。
+            object originalFileDia = null;
+            bool restoreFileDia = false;
+            try { originalFileDia = AcApp.GetSystemVariable("FILEDIA"); AcApp.SetSystemVariable("FILEDIA", 0); restoreFileDia = true; }
+            catch { restoreFileDia = false; }
             CommandEventHandler ended = null;
             CommandEventHandler failed = null;
             CommandEventHandler cancelled = null;
@@ -350,6 +370,7 @@ namespace AutoCAD2024Mcp
                 doc.CommandEnded -= ended;
                 doc.CommandFailed -= failed;
                 doc.CommandCancelled -= cancelled;
+                if (restoreFileDia) { restoreFileDia = false; try { AcApp.SetSystemVariable("FILEDIA", originalFileDia); } catch { } }
             };
             ended = (sender, args) =>
             {
@@ -455,8 +476,9 @@ namespace AutoCAD2024Mcp
             }
 
             string requested = RequiredString(p, "command").Trim().TrimStart('_', '.');
-            if (!AllowedCommands.Contains(requested))
-                throw new CadMcpException("COMMAND_BLOCKED", "Command is not allowlisted: " + requested, AllowedCommands.OrderBy(x => x));
+            HashSet<string> queuedAllowed = AllowedCommandSet();
+            if (!queuedAllowed.Contains(requested))
+                throw new CadMcpException("COMMAND_BLOCKED", "Command is not allowlisted: " + requested, queuedAllowed.OrderBy(x => x));
             JArray arguments = p["arguments"] as JArray ?? new JArray();
             string line = "_." + requested + "\r" + string.Join("\r", arguments.Select(value => QuoteCommandArg((string)value ?? value.ToString()))) + "\r";
             return QueueCommandCompletion(doc, name => CommandNamesMatch(name, requested), line, 1, "COMMAND_FAILED", () => new JObject
@@ -1243,7 +1265,32 @@ namespace AutoCAD2024Mcp
                 }
                 else if (action == "import")
                 {
-                    string path = AbsolutePath(p, "sourcePath", true); using (var source = new Database(false, true)) { source.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, ""); db.Insert(name, source, true); }
+                    string path = AbsolutePath(p, "sourcePath", true);
+                    using (var source = new Database(false, true))
+                    {
+                        source.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, "");
+                        bool hasNamedBlock = false;
+                        ObjectId sourceBlockId = ObjectId.Null;
+                        using (Transaction sourceTransaction = source.TransactionManager.StartTransaction())
+                        {
+                            var sourceBlockTable = (BlockTable)sourceTransaction.GetObject(source.BlockTableId, OpenMode.ForRead);
+                            hasNamedBlock = sourceBlockTable.Has(name);
+                            if (hasNamedBlock) sourceBlockId = sourceBlockTable[name];
+                            sourceTransaction.Commit();
+                        }
+                        // 若源 DWG 中存在同名块定义，则只克隆该块（含依赖对象），而不是把整个文件当成一个块。
+                        // 这样可复用第三方符号库（例如天正电气的 $element$xxxx 元件块），也避免 db.Insert 同名时抛 eSelfReference。
+                        if (hasNamedBlock)
+                        {
+                            var ids = new ObjectIdCollection { sourceBlockId };
+                            var map = new IdMapping();
+                            db.WblockCloneObjects(ids, db.BlockTableId, map, DuplicateRecordCloning.Replace, false);
+                        }
+                        else
+                        {
+                            db.Insert(name, source, true);
+                        }
+                    }
                 }
                 else throw new CadMcpException("INVALID_ACTION", "Unsupported block action: " + action);
                 tr.Commit();
@@ -1427,10 +1474,45 @@ namespace AutoCAD2024Mcp
         }
 
         private static readonly HashSet<string> AllowedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "REGEN", "ZOOM", "-PURGE", "AUDIT", "OVERKILL", "FLATTEN", "WBLOCK", "DXFOUT", "-PLOT", "EXPORTPDF", "PNGOUT", "JPGOUT", "SVGOUT" };
+
+        // 额外白名单来源（用于放行第三方命令，例如天正电气的 YJCR/BZSB 等）：
+        //   1) 环境变量 AUTOCAD_MCP_EXTRA_COMMANDS（逗号/分号/换行分隔）
+        //   2) 插件程序集同目录下的 allowed-commands.txt（同上分隔，# 后可写注释）
+        private static HashSet<string> AllowedCommandSet()
+        {
+            var allowed = new HashSet<string>(AllowedCommands, StringComparer.OrdinalIgnoreCase);
+            AddConfiguredCommands(allowed, Environment.GetEnvironmentVariable("AUTOCAD_MCP_EXTRA_COMMANDS"));
+            try
+            {
+                string assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (!string.IsNullOrEmpty(assemblyDirectory))
+                {
+                    string file = Path.Combine(assemblyDirectory, "allowed-commands.txt");
+                    if (File.Exists(file)) AddConfiguredCommands(allowed, File.ReadAllText(file));
+                }
+            }
+            catch { }
+            return allowed;
+        }
+
+        private static void AddConfiguredCommands(HashSet<string> target, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            foreach (string raw in text.Split(new[] { ',', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string name = raw.Trim();
+                int comment = name.IndexOf('#');
+                if (comment >= 0) name = name.Substring(0, comment).Trim();
+                name = name.TrimStart('_', '.');
+                if (name.Length > 0) target.Add(name);
+            }
+        }
+
         private static JToken Command(Document doc, JObject p)
         {
             string command = RequiredString(p, "command").Trim().TrimStart('_', '.');
-            if (!AllowedCommands.Contains(command)) throw new CadMcpException("COMMAND_BLOCKED", "Command is not allowlisted: " + command, AllowedCommands.OrderBy(x => x));
+            HashSet<string> allowed = AllowedCommandSet();
+            if (!allowed.Contains(command)) throw new CadMcpException("COMMAND_BLOCKED", "Command is not allowlisted: " + command, allowed.OrderBy(x => x));
             var args = p["arguments"] as JArray ?? new JArray();
             string line = "_." + command + " " + string.Join(" ", args.Select(a => QuoteCommandArg((string)a ?? a.ToString()))) + " ";
             doc.SendStringToExecute(line, true, false, false);

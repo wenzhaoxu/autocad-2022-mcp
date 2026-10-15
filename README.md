@@ -19,6 +19,17 @@
 | 构建默认路径由 AutoCAD 2024 改为 2022 | `plugin/AutoCAD2024Mcp/AutoCAD2024Mcp.csproj` | 直接 `dotnet build` 即可对 2022 程序集编译 |
 
 部署要点、已验证能力与已知限制见 [`docs/autocad-2022-port.md`](docs/autocad-2022-port.md)。
+天正电气（T20 V9）符号库的自动化复用见 [`docs/tangent-integration.md`](docs/tangent-integration.md)。
+
+## 额外命令白名单
+
+`cad_command` 默认只放行内置安全命令。需要驱动第三方命令（例如天正电气的 `YJCR`/`BZSB`）时，
+把命令名写进插件程序集同目录的 `allowed-commands.txt`（仓库内模板见
+[`plugin/AutoCAD2024Mcp/allowed-commands.txt`](plugin/AutoCAD2024Mcp/allowed-commands.txt)），
+或设置环境变量 `AUTOCAD_MCP_EXTRA_COMMANDS`。**无需重新编译，重启 AutoCAD 生效。**
+
+> 注意：天正自身的命令只能在人工交互下完成（见 `docs/tangent-integration.md`）；
+> 用 MCP 自动化复用天正符号，应走 `cad_block import` + `insert`。
 
 > 程序集名、命名空间、bundle 目录名、`CADMCP*` 命令、命名管道前缀与实例注册目录**维持原样**（`AutoCAD2024Mcp` / `autocad-2024-mcp-<pid>`），以确保升级路径稳定、不破坏既有安装。字符串 `product: "AutoCAD 2024"` 为硬编码，`cad_status.release` 会如实返回实际版本（2022 为 `24.1.0.0`）。
 

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### 可配置的命令白名单（支持第三方命令）
+
+- `cad_command` 的白名单现在可由运行时配置扩充：插件程序集同目录的 `allowed-commands.txt`，
+  或环境变量 `AUTOCAD_MCP_EXTRA_COMMANDS`（逗号/分号/换行分隔，`#` 后可写注释）。
+  无需重新编译插件，重启 AutoCAD 即生效。
+- 统一了两条校验路径（`Command()` 与 `QueueInteractiveOperationAsync()`），此前只放开其中一条会导致
+  `waitForCompletion` 默认值下第三方命令仍被拦截。
+- `install-plugin.ps1` 会在存在时一并部署 `allowed-commands.txt`。
+
+### 修复 FILEDIA=1 时导出命令弹出文件对话框并阻塞队列
+
+- `saveCopy`、`cad_export format=dwg|dxf|stl` 现在与 `saveAs` 一致：命令执行期间强制 `FILEDIA=0`，
+  结束/失败/取消后恢复。
+- 在天正电气等**接管了 `-WBLOCK` / `DXFOUT` 原生命令**的环境中，`FILEDIA=1` 会弹出
+  「创建图形文件」模态对话框，阻塞命令队列并让桥接 119 秒超时。修复后 `saveCopy` 立即返回。
+
+### `cad_block import` 支持导入源 DWG 中的指定块
+
+- 源 DWG 中存在与 `name` 同名的块定义时，只克隆该块（含依赖对象），而不是把整个文件当成一个块。
+- 顺带消除同名时 `Database.Insert` 抛出的 `eSelfReference`。
+- 使「一次性入库 → 之后全自动复用」的第三方符号库流程成为可能（见 `docs/tangent-integration.md`）。
+
+### 文档
+
+- 新增 `docs/tangent-integration.md`：天正电气 T20 符号库的自动化路径、边界、符号编号检索方法，
+  以及天正环境的探测手段（`tchdata.dbf` / `tchcmd.txt` / `.TK` 索引，均为 GBK 编码）。
+
 ### AutoCAD 2022 (R24.1) 移植
 
 - 插件清单 `SeriesMin/SeriesMax` 由 `R24.3` 改为 `R24.1`；AutoCAD 2022 现在会正常加载该 bundle。

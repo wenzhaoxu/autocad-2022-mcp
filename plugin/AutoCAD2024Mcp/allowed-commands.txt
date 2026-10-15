@@ -1,0 +1,60 @@
+# AutoCAD MCP 额外白名单（cad_command 可执行的原生命令）
+#
+# 用途：cad_command 默认只放行内置安全命令（REGEN/ZOOM/AUDIT/OVERKILL/FLATTEN/
+# WBLOCK/DXFOUT/-PLOT/EXPORTPDF/PNGOUT/JPGOUT/SVGOUT）。需要驱动第三方命令
+# （例如天正电气的元件插入）时，把命令名写在这里。
+#
+# 格式：逗号、分号或换行分隔；`#` 之后为注释。等价的环境变量为
+# AUTOCAD_MCP_EXTRA_COMMANDS（两者都会生效，取并集）。
+#
+# 该文件由插件在运行时从「程序集同目录」读取，因此修改后无需重新编译插件，
+# 但要重启 AutoCAD 才生效。
+#
+# ---------------------------------------------------------------------------
+# 天正电气 T20（命令名见 <天正安装目录>\sys\tchcmd.txt）
+# ---------------------------------------------------------------------------
+
+# 元件（Element 库）
+YJCR    # 元件插入
+YJCC    # 元件擦除
+YJFZ    # 元件复制
+YJYD    # 元件移动
+YJTH    # 元件替换
+YJBH    # 元件标号
+YJBZ    # 元件标注
+YJKD    # 元件宽度
+ZYJ     # 造元件
+DSYJ    # 电视元件
+
+# 设备（Equip 库）
+BZSB    # 标注设备
+ZSB     # 造设备
+SBCC    # 设备擦除
+SBDY    # 设备定义
+SBFZ    # 设备翻转
+SBSF    # 设备缩放
+SBTH    # 设备替换
+SBXZ    # 设备旋转
+SBYD    # 设备移动
+SBLX    # 设备连线
+XFSB    # 消防设备
+
+# 开关 / 灯具 / 柜
+BZKG    # 标注开关
+BZDJ    # 标注灯具
+CKGG    # 插开关柜
+ZKGG    # 造开关柜
+ZHKG    # 转换开关
+
+# 图库 / 布置 / 接地（用于测试自动化入口）
+YLTK    # 原理图库（图库浏览器）
+XFSB    # 消防设备
+RYBZ    # 平面设备-任意布置
+YXDB    # 平面设备-沿线单布
+CJDJ    # 插接地极
+JDX     # 接地线
+ZDJD    # 自动接地
+DXSZ    # 导线设置
+DX        # 导线
+HLJD    # 绘连接点
+PLRK    # 批量入库

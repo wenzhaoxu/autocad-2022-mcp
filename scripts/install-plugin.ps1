@@ -29,6 +29,13 @@ New-Item -ItemType Directory -Force -Path $contentsRoot | Out-Null
 Copy-Item -LiteralPath $manifest -Destination (Join-Path $bundleRoot "PackageContents.xml") -Force
 Copy-Item -LiteralPath $sourceDll -Destination (Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.1.dll") -Force
 
+# 可选：额外白名单配置（放行第三方命令，例如天正电气的 YJCR）。缺失时插件使用内置安全白名单。
+$allowed = Join-Path $projectRoot "plugin\AutoCAD2024Mcp\allowed-commands.txt"
+if (Test-Path -LiteralPath $allowed) {
+    Copy-Item -LiteralPath $allowed -Destination (Join-Path $contentsRoot "allowed-commands.txt") -Force
+    Write-Output "Deployed allowed-commands.txt (extra cad_command allowlist)"
+}
+
 $installedDll = Join-Path $contentsRoot "AutoCAD2024Mcp.0.1.1.dll"
 if ((Get-FileHash -LiteralPath $sourceDll).Hash -ne (Get-FileHash -LiteralPath $installedDll).Hash) {
     throw "Installed plugin hash does not match the release binary."
