@@ -4,6 +4,24 @@
 
 当前版本：`0.1.1`。
 
+## 本仓库：AutoCAD 2022 移植分支（R24.1）
+
+本仓库 fork 自 [cafedaily/autocad-2024-mcp](https://github.com/cafedaily/autocad-2024-mcp)，目标是让同一套 MCP 在 **AutoCAD 2022（R24.1）** 上工作。
+
+与原仓库的差异（全部为 2022 兼容性修正，不含功能删减）：
+
+| 变更 | 文件 | 原因 |
+|---|---|---|
+| 插件清单 `SeriesMin/SeriesMax` 由 `R24.3` 改为 `R24.1` | `bundle/AutoCAD2024Mcp.bundle/PackageContents.xml` | AutoCAD 2022 默认**不会加载**标记为 2024 的 bundle |
+| 空模板时显式解析默认模板路径 | `plugin/AutoCAD2024Mcp/CadDispatcher.cs` | `DocumentCollection.Add("")` 在 2022 上会**挂起**（超时），必须传具体 `.dwt` 路径 |
+| `close` 移出命令上下文 | `plugin/AutoCAD2024Mcp/CadDispatcher.cs` | `Document.CloseAndDiscard()` 不允许在命令上下文内执行，否则抛异常且被 AutoCAD 吞掉 |
+| 命令上下文回调显式捕获并重新抛出异常 | `plugin/AutoCAD2024Mcp/CadDispatcher.cs` | AutoCAD 会吞掉命令上下文回调中的异常，导致调用方只看到 `result: null`（静默"成功"） |
+| 构建默认路径由 AutoCAD 2024 改为 2022 | `plugin/AutoCAD2024Mcp/AutoCAD2024Mcp.csproj` | 直接 `dotnet build` 即可对 2022 程序集编译 |
+
+部署要点、已验证能力与已知限制见 [`docs/autocad-2022-port.md`](docs/autocad-2022-port.md)。
+
+> 程序集名、命名空间、bundle 目录名、`CADMCP*` 命令、命名管道前缀与实例注册目录**维持原样**（`AutoCAD2024Mcp` / `autocad-2024-mcp-<pid>`），以确保升级路径稳定、不破坏既有安装。字符串 `product: "AutoCAD 2024"` 为硬编码，`cad_status.release` 会如实返回实际版本（2022 为 `24.1.0.0`）。
+
 ## 已实现能力
 
 | MCP 工具 | 能力 |

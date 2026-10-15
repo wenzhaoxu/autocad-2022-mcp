@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### AutoCAD 2022 (R24.1) 移植
+
+- 插件清单 `SeriesMin/SeriesMax` 由 `R24.3` 改为 `R24.1`；AutoCAD 2022 现在会正常加载该 bundle。
+- 修复 `cad_document new` 在 AutoCAD 2022 上挂起：`DocumentCollection.Add("")` 需要具体模板路径，空模板时改为按 `DEFAULT_TEMPLATE` → `LOCALROOTPREFIX\Template\acadiso.dwt` → `acad.dwt` → 目录内任一 `.dwt` 的顺序解析。
+- 修复 `cad_document close` 在 AutoCAD 2022 上静默失败（返回 `result: null` 且文档未关闭）：`Document.CloseAndDiscard()` 不允许在命令上下文内执行，已将 `close` 移出 `RequiresCommandContext`，仅 `new`/`open`/`activate` 仍走命令上下文。
+- 修复命令上下文回调吞异常导致 `result: null` 的静默"成功"：`DispatchInCommandContextAsync` 现在显式捕获并在上下文返回后重新抛出异常，调用方会收到真实错误码。
+- 插件工程默认 `AutoCADDir` 由 `C:\Program Files\Autodesk\AutoCAD 2024` 改为 `...\AutoCAD 2022`，`dotnet build` 无需额外参数即可对 2022 程序集编译。
+- 安装脚本输出提示由 "Restart AutoCAD 2024" 更正为 2022。
+- 新增 `docs/autocad-2022-port.md`，记录部署前提（AutoCAD 必须以普通用户权限运行，否则命名管道受 Windows 强制完整性控制拦截）、已验证能力与已知限制。
+
 ## 0.1.1 - 2026-09-16
 
 - 修复 `cad_document saveAs` 在 `FILEDIA=1` 时打开交互式文件窗口；保存完成、失败或取消后恢复原设置。

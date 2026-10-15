@@ -383,11 +383,16 @@ namespace AutoCAD2024Mcp
         private static async Task<JToken> DispatchInCommandContextAsync(string method, JObject p)
         {
             JToken result = null;
+            System.Exception failure = null;
             await AcApp.DocumentManager.ExecuteInCommandContextAsync(async ignored =>
             {
-                result = Dispatch(method, p);
+                // AutoCAD 会吞掉命令上下文回调中抛出的异常，导致调用方只看到 result=null。
+                // 这里显式捕获并重新抛出，避免"静默成功"。
+                try { result = Dispatch(method, p); }
+                catch (System.Exception ex) { failure = ex; }
                 await Task.CompletedTask;
             }, null);
+            if (failure != null) throw failure;
             return result;
         }
 
@@ -396,7 +401,10 @@ namespace AutoCAD2024Mcp
             if (method == "document")
             {
                 string action = (string)p["action"];
-                return action == "new" || action == "open" || action == "close" || action == "activate";
+                // AutoCAD 2022 移植补丁：close 使用 Document.CloseAndDiscard()，
+                // 该方法不允许在命令上下文内执行（会抛异常且被 AutoCAD 吞掉）。
+                // new/open/activate 仍需命令上下文。
+                return action == "new" || action == "open" || action == "activate";
             }
             return false;
         }
@@ -664,6 +672,37 @@ namespace AutoCAD2024Mcp
             };
         }
 
+        // AutoCAD 2022 (R24.1) 移植补丁：
+        // 上游使用 docs.Add("")，空模板在 AutoCAD 2022 上会挂起（2024 上正常）。
+        // 这里在模板为空时显式解析一个可用模板路径。
+        private static string ResolveDefaultTemplate()
+        {
+            var candidates = new List<string>();
+            string configured = null;
+            try { configured = Convert.ToString(AcApp.GetSystemVariable("DEFAULT_TEMPLATE"), CultureInfo.InvariantCulture); } catch { }
+            if (!string.IsNullOrWhiteSpace(configured)) candidates.Add(configured);
+            try
+            {
+                string prefix = Convert.ToString(AcApp.GetSystemVariable("LOCALROOTPREFIX"), CultureInfo.InvariantCulture);
+                if (!string.IsNullOrWhiteSpace(prefix))
+                {
+                    string templateDirectory = Path.Combine(prefix, "Template");
+                    if (Directory.Exists(templateDirectory))
+                    {
+                        candidates.Add(Path.Combine(templateDirectory, "acadiso.dwt"));
+                        candidates.Add(Path.Combine(templateDirectory, "acad.dwt"));
+                        try { candidates.AddRange(Directory.GetFiles(templateDirectory, "*.dwt")); } catch { }
+                    }
+                }
+            }
+            catch { }
+            foreach (string candidate in candidates)
+            {
+                try { if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate)) return candidate; } catch { }
+            }
+            return "";
+        }
+
         private static JToken DocumentOperation(JObject p)
         {
             string action = RequiredString(p, "action");
@@ -676,7 +715,9 @@ namespace AutoCAD2024Mcp
             }
             if (action == "new")
             {
-                Document d = docs.Add((string)p["template"] ?? "");
+                string template = (string)p["template"];
+                if (string.IsNullOrWhiteSpace(template)) template = ResolveDefaultTemplate();
+                Document d = docs.Add(template);
                 docs.MdiActiveDocument = d;
                 return DocumentResult(d);
             }

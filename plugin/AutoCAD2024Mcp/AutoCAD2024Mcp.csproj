@@ -8,8 +8,8 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AssemblyName>AutoCAD2024Mcp</AssemblyName>
     <RootNamespace>AutoCAD2024Mcp</RootNamespace>
-    <AutoCADDir Condition="'$(AutoCADDir)' == '' and Exists('D:\Autodesk\AutoCAD 2024\acdbmgd.dll')">D:\Autodesk\AutoCAD 2024</AutoCADDir>
-    <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2024</AutoCADDir>
+    <AutoCADDir Condition="'$(AutoCADDir)' == '' and Exists('D:\Autodesk\AutoCAD 2022\acdbmgd.dll')">D:\Autodesk\AutoCAD 2022</AutoCADDir>
+    <AutoCADDir Condition="'$(AutoCADDir)' == ''">C:\Program Files\Autodesk\AutoCAD 2022</AutoCADDir>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="acdbmgd"><HintPath>$(AutoCADDir)\acdbmgd.dll</HintPath><Private>false</Private></Reference>

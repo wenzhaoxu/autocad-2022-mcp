@@ -8,7 +8,8 @@
                     UpgradeCode="{AC7D22D5-6B27-42F1-8A21-A0E61D46E40A}">
   <CompanyDetails Name="Local" />
   <Components Description="AutoCAD 2024 MCP bridge">
-    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.3" SeriesMax="R24.3" />
+    <!-- 本地移植：由 R24.3 改为 R24.1，以适配本机的 AutoCAD 2022 -->
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.1" SeriesMax="R24.1" />
     <ComponentEntry AppName="AutoCAD2024Mcp"
                     AppType=".Net"
                     ModuleName="./Contents/Windows/AutoCAD2024Mcp.0.1.1.dll"

@@ -35,4 +35,4 @@ if ((Get-FileHash -LiteralPath $sourceDll).Hash -ne (Get-FileHash -LiteralPath $
 }
 
 Write-Output "Installed AutoCAD MCP 0.1.1: $bundleRoot"
-Write-Output "Restart AutoCAD 2024, then run CADMCPSTATUS."
+Write-Output "Restart AutoCAD 2022, then run CADMCPSTATUS."
